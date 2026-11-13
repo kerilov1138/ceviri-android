@@ -23,23 +23,26 @@ jobs:
 
     steps:
       - name: Kodlari al
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Node.js kur
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
       - name: Java 21 kur
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
           cache: gradle
 
-      - name: Android SDK kur
-        uses: android-actions/setup-android@v3
+      # GitHub'in ubuntu sunucularinda Android SDK hazir kurulu gelir (ANDROID_HOME)
+      - name: Android SDK kontrol
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" | tail -3
 
       - name: Bagimliliklari yukle
         run: npm ci

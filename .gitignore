@@ -1,0 +1,6 @@
+node_modules/
+www/capacitor-core.js
+out/
+*.apk
+.DS_Store
+www/mqtt.min.js

@@ -14,7 +14,7 @@ CEVIRI canlı sesli çeviri uygulamasının Android sürümü. APK, GitHub Actio
      git add .
      git commit -m "ilk surum"
      git branch -M main
-     git remote add origin https://github.com/KULLANICI_ADIN/ceviri-android.git
+     git remote add origin https://github.com/kerilov1138/ceviri-android.git
      git push -u origin main
      ```
 3. Depoda **Actions** sekmesine gir. "Android APK Derle" kendiliğinden başlar

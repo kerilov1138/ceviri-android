@@ -85,8 +85,12 @@ jobs:
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk out/CEVIRI.apk
-          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BT/apksigner" verify --print-certs out/CEVIRI.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          echo "apksigner: $APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs out/CEVIRI.apk > out/imza.txt
+          grep -i -E "verified using|certificate (DN|SHA-256)" out/imza.txt
+          grep -q "CN=CEVIRI" out/imza.txt || { echo "::error::APK CEVIRI anahtariyla imzalanmamis"; cat out/imza.txt; exit 1; }
+          rm -f out/imza.txt
           rm -f "$RUNNER_TEMP/ceviri.keystore"
           ls -la out
 

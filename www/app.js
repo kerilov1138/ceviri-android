@@ -827,11 +827,6 @@ function getShareBaseUrl() {
 
 function updateInviteLink() {
   if (!state.roomCode) return;
-  if (window.CeviriRelay) {
-    // Android: davet linki yerine oda kodu paylasilir
-    els.inviteLinkInput.value = state.roomCode;
-    return;
-  }
   const inviteUrl = `${getShareBaseUrl()}/?room=${encodeURIComponent(state.roomCode)}`;
   els.inviteLinkInput.value = inviteUrl;
 }
@@ -1085,7 +1080,7 @@ function bindEvents() {
     try {
       await navigator.clipboard.writeText(els.inviteLinkInput.value);
       els.copyInviteBtn.textContent = '✓ Kopyalandı';
-      setTimeout(() => (els.copyInviteBtn.textContent = window.CeviriRelay ? 'Oda Kodunu Kopyala' : 'Davet Linkini Kopyala'), 1600);
+      setTimeout(() => (els.copyInviteBtn.textContent = 'Davet Linkini Kopyala'), 1600);
     } catch {
       els.inviteLinkInput.select();
     }

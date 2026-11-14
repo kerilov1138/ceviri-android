@@ -11,6 +11,7 @@ function makeDevice(name, brokers) {
     navigator: {}, location: { href: 'https://localhost/', origin: 'https://localhost', protocol: 'https:' },
     document: { createElement: () => ({}), documentElement: { appendChild() {} }, addEventListener() {}, getElementById() { return null; } },
     CEVIRI_BROKERS: brokers,
+    CEVIRI_WEB_URL: 'https://example.github.io/ceviri-android/',
     Capacitor: { isNativePlatform: () => true },
     capacitorExports: { registerPlugin: () => ({ addListener: () => Promise.resolve({ remove() {} }) }) },
     fetch: async (url) => {
@@ -40,7 +41,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
 
   // online-info -> ready
   let info; for (let i = 0; i < 50; i++) { info = await (await A.fetch('/api/online-info')).json(); if (info.status === 'ready') break; await sleep(100); }
-  assert.equal(info.status, 'ready'); assert.ok(info.publicUrl); console.log('ok online-info ready, brokers=', info.brokers);
+  assert.equal(info.status, 'ready'); assert.equal(info.publicUrl, 'https://example.github.io/ceviri-android'); console.log('ok online-info ready, brokers=', info.brokers);
   await B.fetch('/api/online-info');
 
   // A creates room

@@ -1,8 +1,11 @@
-# CEVIRI - Android APK derleme
+# CEVIRI - Android APK derleme + web surumu (GitHub Pages)
 # Her push'ta (veya Actions sekmesinden "Run workflow" ile elle) calisir.
-# Cikti: Actions > ilgili calisma > Artifacts > CEVIRI-apk
-# main/master dalina her push'ta ayrica Releases bolumune CEVIRI.apk eklenir
-# (telefondan dogrudan indirmek icin en kolay yol).
+#
+# build: APK'yi derler. Cikti: Releases bolumunde CEVIRI.apk
+#        (ve Actions > calisma > Artifacts > CEVIRI-apk)
+# web:   Ayni uygulamayi https://<kullanici>.github.io/<depo>/ adresinde
+#        yayinlar. APK'daki davet linkleri bu adrese gider; uygulamasi olmayan
+#        telefonlar (iPhone dahil) odaya tarayicidan katilir.
 
 name: Android APK Derle
 
@@ -50,6 +53,9 @@ jobs:
       - name: Testleri calistir (ses, ceviri, online oda)
         run: npm test
 
+      - name: Davet linki adresini yaz (GitHub Pages)
+        run: node scripts/write-web-url.js
+
       - name: Web dosyalarini Android projesine kopyala (cap sync)
         run: npm run sync
 
@@ -82,3 +88,50 @@ jobs:
             Android icin CEVIRI uygulamasi. Telefona CEVIRI.apk dosyasini indirip acin.
             (Ilk kurulumda "bilinmeyen kaynaklardan yukleme" izni istenir.)
           files: out/CEVIRI.apk
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Kodlari al
+        uses: actions/checkout@v5
+
+      - name: Node.js kur
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Bagimliliklari yukle
+        run: npm ci
+
+      - name: Web dosyalarini hazirla
+        run: |
+          npm run copy-core
+          node scripts/write-web-url.js
+          touch www/.nojekyll
+
+      - name: GitHub Pages ayarla
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Web surumunu yukle
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: www
+
+      - name: Yayinla
+        id: deploy
+        uses: actions/deploy-pages@v4

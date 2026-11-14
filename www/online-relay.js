@@ -557,11 +557,21 @@
     return json(404, { error: 'Not found' });
   }
 
+  // Davet linklerinin gidecegi web surumu (GitHub Pages). web-url.js'te tanimlanir.
+  // Tarayicida acilmissa bulundugu adres kullanilir.
+  function webUrl() {
+    var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+    if (!isNative && /^https?:$/.test(window.location.protocol)) {
+      return (window.location.origin + window.location.pathname).replace(/\/(index\.html)?$/, '');
+    }
+    return String(window.CEVIRI_WEB_URL || '').replace(/\/+$/, '');
+  }
+
   function onlineInfo() {
     transport.start();
     var n = transport.connectedCount();
     if (transport.error) return { onlineMode: true, status: 'error', publicUrl: null, error: transport.error };
-    if (n > 0) return { onlineMode: true, status: 'ready', publicUrl: 'relay', error: null, brokers: n };
+    if (n > 0) return { onlineMode: true, status: 'ready', publicUrl: webUrl(), error: null, brokers: n };
     if (Date.now() - transport.startedAt > 20000) {
       return { onlineMode: true, status: 'error', publicUrl: null, error: 'Online sunucuya ulasilamadi - internetinizi kontrol edin' };
     }

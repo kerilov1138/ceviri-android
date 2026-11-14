@@ -1,6 +1,6 @@
 const vm = require('vm'); const fs = require('fs'); const assert = require('assert');
 const src = fs.readFileSync(require('path').join(__dirname, '..', 'www', 'android-shim.js'), 'utf8');
-function setup(srBehavior, permState = 'granted') {
+function setup(srBehavior, permState = 'granted', opts = {}) {
   const calls = { srStart: [], tts: [], fetch: [] };
   const listeners = {};
   const SR = {
@@ -11,12 +11,13 @@ function setup(srBehavior, permState = 'granted') {
   };
   const TTS = { speak: async (o) => { calls.tts.push(o); }, stop: async () => {} };
   const win = {
-    Capacitor: { isNativePlatform: () => true },
+    Capacitor: { isNativePlatform: () => opts.native !== false },
     capacitorExports: { registerPlugin: (n) => n === 'SpeechRecognition' ? SR : TTS },
     location: { href: 'https://localhost/', origin: 'https://localhost' },
-    fetch: async (url) => { calls.fetch.push(url); return new Response(JSON.stringify([[['Hello ','Merhaba '],['world','dunya']],null,'tr']), {status:200}); },
+    SpeechRecognition: opts.browserSR, speechSynthesis: opts.browserTTS,
+    fetch: async (url) => { calls.fetch.push(url); if (opts.primaryFails && url.includes('translate.googleapis.com')) throw new TypeError('Failed to fetch (CORS)'); if (url.includes('clients5.google.com')) return new Response(JSON.stringify([['Hello world (yedek)', 'tr']]), {status:200}); return new Response(JSON.stringify([[['Hello ','Merhaba '],['world','dunya']],null,'tr']), {status:200}); },
   };
-  const document = { createElement: () => ({}), documentElement: { appendChild() {} } };
+  const document = { createElement: () => ({}), documentElement: { appendChild() {} }, addEventListener() {}, removeEventListener() {} };
   const ctx = { window: win, document, navigator: {}, Response, URL, Map, Promise, setTimeout, JSON, String, Math, console };
   vm.createContext(ctx); vm.runInContext(src, ctx);
   return { win, calls };
@@ -73,5 +74,13 @@ const tick = (ms=20) => new Promise(r => setTimeout(r, ms));
   assert.equal(calls.tts[0].lang, 'en-US'); assert.equal(calls.tts[0].rate, 1.25);
   assert.deepEqual(win.speechSynthesis.getVoices(), []);
   console.log('ok tts');
+  // 7) Tarayici modu (GitHub Pages): ses API'lerine dokunulmaz, ceviri yedek adrese duser
+  const fakeSR = function BrowserSR() {}; const fakeTTS = { speak() {} };
+  ({ win, calls } = setup(async () => ({}), 'granted', { native: false, primaryFails: true, browserSR: fakeSR, browserTTS: fakeTTS }));
+  assert.equal(win.SpeechRecognition, fakeSR); assert.equal(win.speechSynthesis, fakeTTS);
+  r = await win.fetch('/api/translate', { method:'POST', body: JSON.stringify({ text:'Merhaba dunya', sourceLang:'tr-TR', targetLang:'en-US' }) });
+  d = await r.json(); assert.equal(r.status, 200); assert.equal(d.translatedText, 'Hello world (yedek)');
+  assert.ok(calls.fetch[1].includes('clients5.google.com'));
+  console.log('ok browser mode + fallback translate');
   console.log('ALL PASS');
 })().catch(e => { console.error('FAIL', e); process.exit(1); });

@@ -41,6 +41,20 @@ yeni sürüm eskisinin üzerine, uygulamayı silmeden kurulur.
 Arayüzde değişiklik yapınca `TERCUMAN/public` içindeki dosyaları `www/` içine
 kopyala (`index.html` ve `app.js`'teki küçük Android düzenlemelerini koruyarak).
 
+## Davet linki ve web sürümü (iPhone / uygulaması olmayanlar)
+
+GitHub Actions her push'ta uygulamanın web sürümünü ücretsiz olarak
+**GitHub Pages**'te yayınlar: `https://kerilov1138.github.io/ceviri-android/`
+
+- APK'da Online → "Yeni Oda Oluştur" deyince davet kutusunda bu adrese giden
+  bir link çıkar (ör. `.../ceviri-android/?room=AB12CD34`). "Davet Linkini
+  Kopyala" ile WhatsApp vb. üzerinden gönder; QR düğmesi aynı linkin QR kodunu gösterir.
+- Linki açan kişi uygulama kurmadan tarayıcıdan katılır: iPhone'da **Safari**,
+  Android/bilgisayarda **Chrome** veya **Edge**. Adını yazıp "Odaya Katıl"a basması yeterli.
+- Odalar yine şifrelidir; link oda kodunu içerdiği için yalnızca konuşacağın kişiye gönder.
+- Mikrofon için tarayıcı izin ister. iPhone'da seslendirmenin çalışması için
+  sayfada bir kez herhangi bir yere dokunmak gerekir.
+
 ## Online oda modu (sunucusuz)
 
 Masaüstü sürümde odaları bilgisayardaki `server.js` yönetir. Telefonda sunucu
@@ -60,7 +74,6 @@ taklit eder; cihazlar herkese açık ücretsiz MQTT aracıları üzerinden bulu�
 
 ## Masaüstü sürümünden farkları
 
-- Davet linki yerine **oda kodu** paylaşılır.
 - Masaüstü `CEVIRI.exe` henüz eski (sunucu + tünel) yöntemini kullanır; bu
   yüzden şimdilik telefon yalnızca telefonla (veya bu APK'yı kullanan cihazla)
   aynı odaya girer.

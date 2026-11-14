@@ -17,20 +17,25 @@
   'use strict';
 
   var Cap = window.Capacitor;
+  // APK icinde mi (Capacitor), yoksa tarayicida (GitHub Pages web surumu) mi?
+  // Tarayicida: ceviri ve online oda bu dosyadan, ses tanima/seslendirme
+  // tarayicinin kendi Web Speech API'sinden gelir.
   var isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
-  if (!isNative) return; // Normal tarayicida hicbir sey degistirme
 
   // capacitor-core.js (capacitorExports) index.html'de bu dosyadan once yuklenir
-  var registerPlugin = (window.capacitorExports && window.capacitorExports.registerPlugin) || Cap.registerPlugin;
-  var SR = registerPlugin('SpeechRecognition');
-  var TTS = registerPlugin('TextToSpeech');
+  var registerPlugin = (window.capacitorExports && window.capacitorExports.registerPlugin) || (Cap && Cap.registerPlugin);
+  var SR = isNative ? registerPlugin('SpeechRecognition') : null;
+  var TTS = isNative ? registerPlugin('TextToSpeech') : null;
 
   // ---------------------------------------------------------------------------
   // 1) Sunucu gerektiren arayuz parcalarini gizle
   // ---------------------------------------------------------------------------
-  var style = document.createElement('style');
-  style.textContent = '#qrBtn,#exportBtn{display:none!important}';
-  document.documentElement.appendChild(style);
+  if (isNative) {
+    // WebView dosya indirmeyi desteklemez
+    var style = document.createElement('style');
+    style.textContent = '#exportBtn{display:none!important}';
+    document.documentElement.appendChild(style);
+  }
 
   if (navigator.serviceWorker) {
     try {
@@ -83,17 +88,39 @@
       '&tl=' + encodeURIComponent(tl) +
       '&q=' + encodeURIComponent(clean);
 
-    var res = await originalFetch(url, { method: 'GET' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    if (typeof data === 'string') data = JSON.parse(data);
-    if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Beklenmeyen ceviri yaniti');
-
-    var translatedText = data[0]
-      .map(function (s) { return Array.isArray(s) && typeof s[0] === 'string' ? s[0] : ''; })
-      .join('')
-      .trim();
-    var detected = typeof data[2] === 'string' ? data[2] : sl;
+    var translatedText;
+    var detected = sl;
+    try {
+      var res = await originalFetch(url, { method: 'GET' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      if (typeof data === 'string') data = JSON.parse(data);
+      if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Beklenmeyen ceviri yaniti');
+      translatedText = data[0]
+        .map(function (s) { return Array.isArray(s) && typeof s[0] === 'string' ? s[0] : ''; })
+        .join('')
+        .trim();
+      if (typeof data[2] === 'string') detected = data[2];
+    } catch (primaryErr) {
+      // Yedek adres (tarayicida ilk adres engellenirse)
+      var url2 = 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex' +
+        '&sl=' + encodeURIComponent(sl) +
+        '&tl=' + encodeURIComponent(tl) +
+        '&q=' + encodeURIComponent(clean);
+      var res2 = await originalFetch(url2, { method: 'GET' });
+      if (!res2.ok) throw primaryErr;
+      var d2 = await res2.json();
+      if (typeof d2 === 'string') d2 = JSON.parse(d2);
+      var first = Array.isArray(d2) ? d2[0] : d2;
+      if (Array.isArray(first)) {
+        translatedText = String(first[0] || '').trim();
+        if (typeof first[1] === 'string') detected = first[1];
+      } else if (typeof first === 'string') {
+        translatedText = first.trim();
+      } else {
+        throw primaryErr;
+      }
+    }
 
     if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value);
     cache.set(key, { translatedText: translatedText, detectedSourceLang: detected });
@@ -103,13 +130,6 @@
 
   if (window.CeviriRelay) {
     window.CeviriRelay.install({ translate: translate });
-    // Oda kopyalama dugmesinin ilk yazisi
-    document.addEventListener('DOMContentLoaded', function () {
-      var b = document.getElementById('copyInviteBtn');
-      if (b) b.textContent = 'Oda Kodunu Kopyala';
-      var i = document.getElementById('inviteLinkInput');
-      if (i) i.setAttribute('aria-label', 'Oda Kodu');
-    });
   }
 
   window.fetch = async function (input, init) {
@@ -143,6 +163,22 @@
     }
     return originalFetch(input, init);
   };
+
+  if (!isNative) {
+    // iPhone Safari: seslendirme ilk dokunusla "acilmazsa" gelen mesajlar okunmaz
+    var unlockSpeech = function () {
+      document.removeEventListener('pointerdown', unlockSpeech, true);
+      try {
+        if (window.speechSynthesis && window.SpeechSynthesisUtterance) {
+          var u = new SpeechSynthesisUtterance(' ');
+          u.volume = 0;
+          window.speechSynthesis.speak(u);
+        }
+      } catch (e) { /* yoksay */ }
+    };
+    document.addEventListener('pointerdown', unlockSpeech, true);
+    return; // Tarayicida ses tanima ve seslendirme tarayicinin kendisinden gelir
+  }
 
   // ---------------------------------------------------------------------------
   // 3) Konusma tanima: Web Speech API benzeri sinif

@@ -1255,3 +1255,131 @@ img.file-thumb {
 .file-card.failed .file-state {
   color: var(--danger);
 }
+
+/* Online oda: katilimci kutulari (en fazla 6) ve kamera */
+.participants-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.p-tile {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 2px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.p-tile.speaking {
+  border-color: var(--me);
+  box-shadow: 0 0 0 3px var(--me-soft);
+}
+.p-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.p-video.mirror {
+  transform: scaleX(-1);
+}
+.p-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--partner-soft);
+  color: var(--partner);
+  font-size: 1.4rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.p-tile.me .p-avatar {
+  background: var(--me-soft);
+  color: var(--me);
+}
+.p-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  font-size: 0.74rem;
+}
+.p-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+}
+.p-lang {
+  font-family: var(--font-mono);
+  color: #d4d4d8;
+  flex-shrink: 0;
+}
+.p-badges {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: flex;
+  gap: 4px;
+  font-size: 0.78rem;
+}
+.p-badges span {
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #fff;
+}
+.p-note {
+  position: absolute;
+  top: 34px;
+  left: 6px;
+  right: 6px;
+  font-size: 0.7rem;
+  color: var(--warn);
+  text-align: center;
+}
+.p-cam-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.p-cam-btn.on {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.p-cam-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Grup odasi: konusan varken buyuk dugme "Soz Iste" olur */
+.orb-btn.raise-hand,
+#mainToggleBtn.raise-hand {
+  box-shadow: 0 0 0 2px var(--warn);
+}
+#mainToggleBtn.in-queue {
+  box-shadow: 0 0 0 2px var(--partner);
+}

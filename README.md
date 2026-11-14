@@ -100,6 +100,22 @@ kaydeder: uygulamada **Belgeler/CEVIRI** klasörüne kaydedilip açılır, taray
 indirilir. Odaya sonradan katılan da dosyayı görür ve dokununca indirir (gönderen
 odadayken).
 
+## Grup odası (3–6 kişi) ve kamera
+
+- **2 kişi:** oda her zamanki gibi çalışır (çeviriyi gönderen yapar, konuşurken
+  karşı tarafın düğmesi kilitlenir).
+- **3–6 kişi (grup):** **söz sırası (bas-konuş)**. Biri konuşurken diğerlerinin
+  büyük düğmesi **✋ Söz İste** olur; sıra numarası kutularda görünür. Konuşan
+  bitirince (veya 45 sn dolunca) söz sıradakine geçer ve mikrofonu **otomatik**
+  açılır. Mesajı her dinleyenin telefonu **kendi diline** çevirip seslendirir.
+- 7. kişi "oda dolu" uyarısı görür. Kişi sayısı 2'ye düşünce oda 2 kişilik
+  davranışa döner.
+- **Kamera:** katılımcı kutularında kendi kutundaki **📷** ile aç/kapa. Görüntü
+  **sessiz** gider (mikrofon konuşma tanımaya ayrılır), telefonlar arasında
+  doğrudan ve şifreli (WebRTC) iletilir. Bazı mobil ağlarda doğrudan bağlantı
+  kurulamayabilir; o zaman kutuda "Görüntü bağlanamadı" yazar, sohbet ve çeviri
+  etkilenmez.
+
 ## Online oda modu (sunucusuz)
 
 Masaüstü sürümde odaları bilgisayardaki `server.js` yönetir. Telefonda sunucu

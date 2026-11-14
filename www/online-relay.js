@@ -28,6 +28,8 @@
   var HEARTBEAT_MS = 8000;
   var PARTICIPANT_TTL_MS = 25000;
   var HISTORY_LIMIT = 50;
+  var MAX_PARTICIPANTS = 6; // odada en fazla 6 kisi
+  var GROUP_MIN = 3; // 3+ kisi: soz sirasi (bas-konus), cevirmeyi her alici yapar
   var ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
   function sanitizeRoomCode(raw) {
@@ -238,12 +240,15 @@
     var now = Date.now();
     if (msg.type === 'presence' || msg.type === 'hello') {
       var isNew = !this.participants.has(msg.from);
+      var prev = this.participants.get(msg.from);
       this.participants.set(msg.from, {
         clientId: msg.from,
         name: String(msg.name || 'Misafir').slice(0, 40),
         lang: String(msg.lang || 'tr-TR').slice(0, 16),
         joinedAt: msg.joinedAt || now,
         lastSeen: now,
+        hand: typeof msg.handTs === 'number' ? msg.handTs : prev ? prev.hand : 0,
+        cam: typeof msg.cam === 'boolean' ? msg.cam : prev ? prev.cam : false,
       });
       if (msg.micActive) {
         this.applyRemoteMic(msg.from, true, msg.micTs || msg.ts);
@@ -265,6 +270,31 @@
       this.participants.delete(msg.from);
       if (this.activeMic && this.activeMic.clientId === msg.from) this.activeMic = null;
       this.broadcastState();
+      return;
+    }
+
+    if (msg.type === 'hand') {
+      var ph = this.participants.get(msg.from);
+      if (ph) {
+        ph.lastSeen = now;
+        ph.hand = msg.raise ? Number(msg.handTs) || msg.ts || now : 0;
+      }
+      this.broadcastState();
+      return;
+    }
+
+    if (msg.type === 'cam') {
+      var pc = this.participants.get(msg.from);
+      if (pc) {
+        pc.lastSeen = now;
+        pc.cam = Boolean(msg.on);
+      }
+      this.broadcastState();
+      return;
+    }
+
+    if (msg.type === 'rtc') {
+      if (this.self && msg.to === this.self.clientId && msg.data) this.emitFile('rtc_signal', { from: msg.from, data: msg.data });
       return;
     }
 
@@ -356,6 +386,8 @@
       joinedAt: this.self.joinedAt,
       micActive: micActive,
       micTs: micActive ? this.activeMic.ts : 0,
+      handTs: this.self.hand || 0,
+      cam: Boolean(this.self.cam),
     });
   };
 
@@ -374,31 +406,89 @@
     if (changed) this.broadcastState();
   };
 
-  RoomSession.prototype.participantList = function () {
+  // Ilk gelen 6 kisi odanin uyesidir; sonradan gelenler "oda dolu" gorur.
+  // Herkes ayni siralamayi (katilma zamani, esitlikte kimlik) hesapladigi icin
+  // sunucu olmadan da ayni sonuca varilir.
+  RoomSession.prototype.allSorted = function () {
     var list = [];
     this.participants.forEach(function (p) {
-      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt });
+      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt, hand: p.hand || 0, cam: Boolean(p.cam) });
     });
-    list.sort(function (a, b) { return a.joinedAt - b.joinedAt; });
+    list.sort(function (a, b) { return a.joinedAt - b.joinedAt || (a.clientId < b.clientId ? -1 : 1); });
     return list;
+  };
+
+  RoomSession.prototype.participantList = function () {
+    return this.allSorted().slice(0, MAX_PARTICIPANTS);
+  };
+
+  RoomSession.prototype.isGroup = function () {
+    return this.participantList().length >= GROUP_MIN;
+  };
+
+  RoomSession.prototype.setHand = function (raise) {
+    if (!this.self) return;
+    var ts = raise ? this.self.hand || Date.now() : 0;
+    if ((this.self.hand || 0) === ts) return;
+    this.self.hand = ts;
+    this.send({ type: 'hand', raise: Boolean(raise), handTs: ts });
+    this.broadcastState();
+  };
+
+  RoomSession.prototype.setCam = function (on) {
+    if (!this.self) return;
+    this.self.cam = Boolean(on);
+    this.send({ type: 'cam', on: Boolean(on) });
+    this.broadcastState();
   };
 
   RoomSession.prototype.broadcastState = function () {
     if (!this.sink) return;
-    var holder = this.activeMic ? this.participants.get(this.activeMic.clientId) : null;
-    if (this.activeMic && !holder) this.activeMic = null;
+    var members = this.participantList();
+    var memberIds = members.map(function (m) { return m.clientId; });
+    var selfId = this.self ? this.self.clientId : null;
+    var full = Boolean(selfId) && memberIds.indexOf(selfId) < 0;
+    var group = members.length >= GROUP_MIN;
+    if (this.activeMic && memberIds.indexOf(this.activeMic.clientId) < 0) this.activeMic = null;
+
+    // 2 kisiye dusunce soz sirasi kalkar (bugunku iki kisilik davranis)
+    if (!group) {
+      this.participants.forEach(function (p) { p.hand = 0; });
+    }
+    var holderId = this.activeMic ? this.activeMic.clientId : null;
+    var queue = members
+      .filter(function (m) { return m.hand && m.clientId !== holderId; })
+      .sort(function (a, b) { return a.hand - b.hand || (a.clientId < b.clientId ? -1 : 1); });
+
+    // Mikrofon bos ve sira bendeyse sozu otomatik al
+    if (group && !holderId && queue.length && queue[0].clientId === selfId && !full) {
+      this.activeMic = { clientId: selfId, ts: Date.now() };
+      this.self.hand = 0;
+      this.send({ type: 'mic', active: true });
+      this.send({ type: 'hand', raise: false, handTs: 0 });
+      holderId = selfId;
+      queue = queue.slice(1);
+    }
+
+    var holder = holderId ? this.participants.get(holderId) : null;
     this.sink._emit('room_state', {
       roomCode: this.code,
-      participants: this.participantList(),
-      activeMicClientId: this.activeMic ? this.activeMic.clientId : null,
+      participants: members,
+      activeMicClientId: holderId,
       activeMicName: holder ? holder.name : null,
+      group: group,
+      queue: queue.map(function (q) { return q.clientId; }),
+      full: full,
+      maxParticipants: MAX_PARTICIPANTS,
     });
   };
 
   RoomSession.prototype.join = function (sink, clientId, name, lang) {
     var self = this;
     this.sink = sink;
-    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: Date.now(), lastSeen: Infinity };
+    var keepJoined = this.lastSelf && this.lastSelf.clientId === clientId ? this.lastSelf.joinedAt : Date.now();
+    var keepCam = this.lastSelf && this.lastSelf.clientId === clientId ? Boolean(this.lastSelf.cam) : false;
+    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam };
     this.participants.set(clientId, this.self);
     sink._emit('history', { messages: this.messages.slice() });
     this.fileMetas.forEach(function (meta) { sink._emit('file_message', self.fileStatus(meta)); });
@@ -420,6 +510,7 @@
       if (this.activeMic && this.activeMic.clientId === this.self.clientId) this.activeMic = null;
       this.send({ type: 'leave' });
       this.participants.delete(this.self.clientId);
+      this.lastSelf = this.self;
     }
     this.sink = null;
     this.self = null;
@@ -651,7 +742,7 @@
       senderId: String(raw.senderId || '').slice(0, 64),
       senderName: String(raw.senderName || 'Kullanici').slice(0, 40),
       sourceLang: String(raw.sourceLang || 'tr-TR').slice(0, 16),
-      targetLang: String(raw.targetLang || 'en-US').slice(0, 16),
+      targetLang: typeof raw.targetLang === 'string' ? raw.targetLang.slice(0, 16) : '',
       originalText: censorText(text, raw.sourceLang),
       translatedText: censorText(typeof raw.translatedText === 'string' ? raw.translatedText.slice(0, 8000) : '', raw.targetLang),
       latencyMs: typeof raw.latencyMs === 'number' ? raw.latencyMs : undefined,
@@ -755,12 +846,24 @@
         }
         room.activeMic = { clientId: clientId, ts: Date.now() };
         room.send({ type: 'mic', active: true });
+        if (room.self && room.self.hand) {
+          room.self.hand = 0;
+          room.send({ type: 'hand', raise: false, handTs: 0 });
+        }
       } else if (room.activeMic && room.activeMic.clientId === clientId) {
         room.activeMic = null;
         room.send({ type: 'mic', active: false });
       }
       room.broadcastState();
       return json(200, { activeMicClientId: room.activeMic ? room.activeMic.clientId : null });
+    }
+
+    var hand = path.match(/^\/api\/rooms\/([A-Za-z0-9-]+)\/hand$/);
+    if (hand) {
+      var rh = rooms[sanitizeRoomCode(hand[1])];
+      if (!rh || !rh.self) return json(404, { error: 'Oda bulunamadi' });
+      rh.setHand(Boolean(body.raise));
+      return json(200, { raised: Boolean(rh.self.hand) });
     }
 
     var msgMatch = path.match(/^\/api\/rooms\/([A-Za-z0-9-]+)\/message$/);
@@ -773,6 +876,23 @@
       if (transport.connectedCount() === 0) return json(503, { error: 'Online baglanti yok, internetinizi kontrol edin' });
 
       var sourceLang = (typeof body.sourceLang === 'string' && body.sourceLang.trim()) || r.self.lang || 'tr-TR';
+      if (r.isGroup()) {
+        // 3+ kisi: herkes farkli dilde olabilir; ceviriyi her alici kendi cihazinda yapar
+        var gm = {
+          id: Date.now() + '-' + randomId().slice(0, 5),
+          roomCode: r.code,
+          senderId: r.self.clientId,
+          senderName: r.self.name || String(body.senderName || 'Kullanici'),
+          sourceLang: sourceLang,
+          targetLang: '',
+          originalText: censorFn(text, sourceLang),
+          translatedText: '',
+          timestamp: Date.now(),
+        };
+        r.addMessage(gm);
+        await r.send({ type: 'chat', message: gm });
+        return json(200, gm);
+      }
       var partner = r.participantList().filter(function (p) { return p.clientId !== r.self.clientId; })[0] || null;
       var targetLang = (partner && partner.lang) ||
         (typeof body.fallbackTargetLang === 'string' && body.fallbackTargetLang) ||
@@ -828,6 +948,14 @@
     return { onlineMode: true, status: 'starting', publicUrl: webUrl() || null, error: null };
   }
 
+  // Sayfa/sekme kapanirken odadan ayrildigini hemen bildir (digerleri 25 sn beklemesin)
+  window.addEventListener('pagehide', function () {
+    Object.keys(rooms).forEach(function (code) {
+      var room = rooms[code];
+      if (room && room.sink) room.leave(room.sink);
+    });
+  });
+
   window.CeviriRelay = {
     install: function (opts) {
       translateFn = opts.translate;
@@ -835,6 +963,18 @@
     },
     handleRoomApi: handleRoomApi,
     onlineInfo: onlineInfo,
+    /** Kamera durumunu odaya bildirir. */
+    setCam: function (code, on) {
+      var room = rooms[sanitizeRoomCode(code)];
+      if (room) room.setCam(on);
+    },
+    /** WebRTC sinyal mesajini (teklif/cevap/aday) tek bir kisiye gonderir. */
+    sendSignal: function (code, to, data) {
+      var room = rooms[sanitizeRoomCode(code)];
+      if (!room || !room.self) return Promise.resolve(0);
+      return room.send({ type: 'rtc', to: String(to), data: data });
+    },
+    MAX_PARTICIPANTS: MAX_PARTICIPANTS,
     /** Odaya fotograf/PDF gonderir. bytes: Uint8Array */
     sendFile: function (code, name, type, bytes, onProgress) {
       var room = rooms[sanitizeRoomCode(code)];

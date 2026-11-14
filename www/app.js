@@ -2,6 +2,7 @@ import { LANGUAGES, findLanguage } from './languages.js';
 import { initI18n, t, langName, setUiLang, getUiLang, onUiLangChange, UI_LANGS } from './i18n.js';
 import { censor, stripMaskForSpeech } from './profanity.js';
 import { initCamera } from './camera.js';
+import { createVideoMesh } from './video.js';
 
 // Online oda modulu (online-relay.js) karsiya gidecek metni de filtrelesin
 window.CeviriCensor = censor;
@@ -69,6 +70,14 @@ const state = {
   speakWatchdog: null,
   speakKeepAlive: null,
   resumeTimer: null,
+  // Online oda: 3+ kisi grup modu (soz sirasi), katilimcilar, kamera
+  group: false,
+  queue: [],
+  participants: [],
+  handRaised: false,
+  turnTimer: null,
+  incomingChain: Promise.resolve(),
+  videoMesh: null,
 };
 
 function loadSavedSettings() {
@@ -141,6 +150,7 @@ const els = {
   textSpeakerSelect: document.getElementById('textSpeakerSelect'),
   textInput: document.getElementById('textInput'),
   attachBtn: document.getElementById('attachBtn'),
+  participantsGrid: document.getElementById('participantsGrid'),
   attachInput: document.getElementById('attachInput'),
   exportBtn: document.getElementById('exportBtn'),
   clearBtn: document.getElementById('clearBtn'),
@@ -243,13 +253,23 @@ function updateTurnUI() {
   els.turnPartnerBtn.classList.toggle('active', !isMe);
   els.mainToggleBtn.dataset.active = String(state.isActive);
   els.mainToggleBtn.dataset.speaker = state.activeSpeaker;
-  els.mainToggleBtn.disabled = lockedByRemote;
-  els.mainToggleBtn.classList.toggle('locked-remote', lockedByRemote);
-  els.orbLabel.textContent = lockedByRemote
-    ? t('orb.locked')
-    : state.isActive
-      ? 'Durdur'
-      : t('orb.start');
+  const groupWait = lockedByRemote && state.group;
+  const inQueue = groupWait && state.queue.includes(state.clientId);
+  // 2 kisi: karsidaki konusurken dugme kilitli (bugunku davranis).
+  // 3+ kisi: dugme "Soz Iste" / "Siradan Cik" olur.
+  els.mainToggleBtn.disabled = lockedByRemote && !state.group;
+  els.mainToggleBtn.classList.toggle('locked-remote', lockedByRemote && !state.group);
+  els.mainToggleBtn.classList.toggle('raise-hand', groupWait);
+  els.mainToggleBtn.classList.toggle('in-queue', inQueue);
+  els.orbLabel.textContent = groupWait
+    ? inQueue
+      ? t('group.cancelHand')
+      : t('group.raiseHand')
+    : lockedByRemote
+      ? t('orb.locked')
+      : state.isActive
+        ? t('orb.stop')
+        : t('orb.start');
 
   els.faceMeCard.classList.toggle('active-me', state.isActive && isMe);
   els.facePartnerCard.classList.toggle('active-partner', state.isActive && !isMe);
@@ -745,8 +765,8 @@ function appendMessage({
 
   card.innerHTML = `
     <div class="msg-top">
-      <span class="msg-speaker">${whoLabel} · ${srcShort} → ${tgtShort}</span>
-      <span>${msg.time}${typeof latencyMs === 'number' ? ` · ${latencyMs}ms` : ''}</span>
+      <span class="msg-speaker"></span>
+      <span class="msg-time"></span>
     </div>
     <div class="msg-original" dir="auto"></div>
     <div class="msg-translated" dir="auto"></div>
@@ -758,6 +778,11 @@ function appendMessage({
 
   card.querySelector('.msg-original').textContent = originalText;
   card.querySelector('.msg-translated').textContent = translatedText;
+  card.querySelector('.msg-speaker').textContent = targetLang && translatedText
+    ? `${whoLabel} · ${srcShort} → ${tgtShort}`
+    : `${whoLabel} · ${srcShort}`;
+  card.querySelector('.msg-time').textContent = `${msg.time}${typeof latencyMs === 'number' ? ` · ${latencyMs}ms` : ''}`;
+  if (!translatedText) card.querySelector('.msg-translated').classList.add('hidden');
 
   card.querySelector('.replay-btn').textContent = t('msg.replay');
   card.querySelector('.copy-btn').textContent = t('msg.copy');
@@ -830,9 +855,34 @@ async function startLiveSession(speaker = state.activeSpeaker) {
   updateTurnUI();
   startAudioVisualizer();
   startListening();
+
+  // Grup odasinda bir konusma en fazla 45 saniye: sonra soz siradakine gecer
+  clearTimeout(state.turnTimer);
+  if (state.mode === 'online' && state.group) {
+    state.turnTimer = setTimeout(() => {
+      if (state.isActive && state.mode === 'online' && state.group) stopLiveSession();
+    }, GROUP_TURN_MS);
+  }
+}
+
+// Grup odasinda soz iste / siradan cik
+async function toggleHand() {
+  if (!state.roomCode) return;
+  const raise = !state.queue.includes(state.clientId);
+  state.handRaised = raise;
+  try {
+    await fetch(`/api/rooms/${encodeURIComponent(state.roomCode)}/hand`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: state.clientId, raise }),
+    });
+  } catch {
+    // yoksay
+  }
 }
 
 async function stopLiveSession() {
+  clearTimeout(state.turnTimer);
   const pending = state.pendingTranscript.trim();
   state.pendingTranscript = '';
   state.isActive = false;
@@ -954,6 +1004,26 @@ function connectToRoom(roomCode) {
 
   state.roomCode = roomCode;
   els.roomCodeBadge.textContent = roomCode;
+  // Kamera baglantilari: ayni odada dil degisince (yeniden baglanma) korunur
+  if (state.videoMesh && state.videoMesh.roomCode !== roomCode) {
+    state.videoMesh.destroy();
+    state.videoMesh = null;
+  }
+  if (!state.videoMesh && window.CeviriRelay && window.RTCPeerConnection) {
+    state.videoMesh = createVideoMesh({
+      selfId: state.clientId,
+      roomCode,
+      sendSignal: (to, data) => window.CeviriRelay.sendSignal(roomCode, to, data),
+      onRemoteStream: (id, stream) => {
+        remoteStreams.set(id, stream);
+        renderParticipants();
+      },
+      onPeerState: (id, connState) => {
+        peerStates.set(id, connState);
+        renderParticipants();
+      },
+    });
+  }
   els.onlineJoinView.classList.add('hidden');
   els.onlineActiveView.classList.remove('hidden');
   updateInviteLink();
@@ -971,10 +1041,49 @@ function connectToRoom(roomCode) {
 
   es.addEventListener('room_state', (event) => {
     const data = JSON.parse(event.data);
-    const partner = (data.participants || []).find((p) => p.clientId !== state.clientId);
+    const others = (data.participants || []).filter((p) => p.clientId !== state.clientId);
+    const partner = others[0];
 
     state.activeMicClientId = data.activeMicClientId || null;
     state.activeMicName = data.activeMicName || null;
+    state.group = Boolean(data.group);
+    state.queue = Array.isArray(data.queue) ? data.queue : [];
+    state.participants = data.participants || [];
+
+    if (data.full) {
+      showAlert(t('room.full', { n: data.maxParticipants || 6 }));
+      leaveOnlineRoom();
+      return;
+    }
+
+    renderParticipants();
+    if (state.videoMesh) state.videoMesh.syncPeers(state.participants.map((p) => p.clientId));
+
+    if (state.group) {
+      // 3+ kisi: herkes kendi dilinde okur; tek "karsidaki" yok
+      state.partnerName = '';
+      els.partnerLangSelect.disabled = true;
+      setPresenceKey('group.people', { n: state.participants.length });
+      updateLanguageBadges();
+      updateTurnUI();
+      const pos = state.queue.indexOf(state.clientId);
+      if (state.activeMicClientId === state.clientId && !state.isActive && state.handRaised) {
+        // Sira geldi: mikrofon otomatik acilir
+        state.handRaised = false;
+        if (navigator.vibrate) navigator.vibrate(200);
+        setInterimKey('group.yourTurnNow');
+        startLiveSession('me');
+      } else if (!state.isActive) {
+        if (state.activeMicClientId && state.activeMicClientId !== state.clientId) {
+          if (pos >= 0) setInterimKey('group.inQueue', { n: pos + 1 });
+          else setInterimKey('group.speakingRaise', { name: state.activeMicName || t('online.otherSide') });
+        } else if (state.phase === 'idle') {
+          setInterimKey('online.yourTurn');
+        }
+      }
+      return;
+    }
+    state.handRaised = false;
 
     if (partner) {
       state.partnerName = partner.name;
@@ -1003,10 +1112,15 @@ function connectToRoom(roomCode) {
 
   es.addEventListener('history', (event) => {
     const data = JSON.parse(event.data);
-    for (const msg of data.messages || []) {
-      const speaker = msg.senderId === state.clientId ? 'me' : 'partner';
-      appendMessage({ ...msg, speaker });
-    }
+    state.incomingChain = state.incomingChain
+      .then(async () => {
+        for (const raw of data.messages || []) {
+          const speaker = raw.senderId === state.clientId ? 'me' : 'partner';
+          const msg = speaker === 'partner' ? await ensureMyLanguage(raw) : raw;
+          appendMessage({ ...msg, speaker });
+        }
+      })
+      .catch(() => {});
   });
 
   es.addEventListener('file_message', (event) => onFileMessage(JSON.parse(event.data), roomCode));
@@ -1014,9 +1128,20 @@ function connectToRoom(roomCode) {
   es.addEventListener('file_ready', (event) => onFileReady(JSON.parse(event.data)));
   es.addEventListener('file_failed', (event) => onFileFailed(JSON.parse(event.data)));
 
-  es.addEventListener('chat_message', async (event) => {
-    const msg = JSON.parse(event.data);
-    const speaker = msg.senderId === state.clientId ? 'me' : 'partner';
+  es.addEventListener('chat_message', (event) => {
+    const raw = JSON.parse(event.data);
+    // Mesajlar geldikleri sirayla islenir (ceviri + seslendirme ust uste binmesin)
+    state.incomingChain = state.incomingChain.then(() => handleIncomingChat(raw)).catch(() => {});
+  });
+
+  es.addEventListener('rtc_signal', (event) => {
+    const { from, data } = JSON.parse(event.data);
+    if (state.videoMesh) state.videoMesh.handleSignal(from, data);
+  });
+
+  async function handleIncomingChat(raw) {
+    const speaker = raw.senderId === state.clientId ? 'me' : 'partner';
+    const msg = speaker === 'partner' ? await ensureMyLanguage(raw) : raw;
     appendMessage({ ...msg, speaker });
 
     // Speak incoming partner message on this PC without mic echo
@@ -1034,7 +1159,7 @@ function connectToRoom(roomCode) {
         setPhase('idle');
       }
     }
-  });
+  }
 
   es.onerror = () => {
     setPresenceKey('online.reconnecting');
@@ -1346,8 +1471,149 @@ async function saveRoomFile(entry) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Online oda: alicinin kendi diline ceviri, katilimci kutulari, kamera
+// ---------------------------------------------------------------------------
+const GROUP_TURN_MS = 45000;
+const remoteStreams = new Map(); // katilimci id -> MediaStream
+const peerStates = new Map(); // katilimci id -> WebRTC baglanti durumu
+const tiles = new Map(); // katilimci id -> kutu elemani
+
+function baseLang(code) {
+  return String(code || '').toLowerCase().split('-')[0];
+}
+
+/** Gelen mesaj benim dilimde degilse (grup odasi) kendi cihazimda cevir. */
+async function ensureMyLanguage(msg) {
+  if (msg.translatedText && msg.targetLang && baseLang(msg.targetLang) === baseLang(state.myLang)) return msg;
+  if (baseLang(msg.sourceLang) === baseLang(state.myLang)) {
+    return { ...msg, translatedText: msg.originalText, targetLang: state.myLang };
+  }
+  try {
+    const translated = await translateViaApi(msg.originalText, msg.sourceLang, state.myLang);
+    return { ...msg, translatedText: censor(translated, state.myLang), targetLang: state.myLang };
+  } catch {
+    return { ...msg, translatedText: '', targetLang: '' };
+  }
+}
+
+function renderParticipants() {
+  // Grup odasinda tek bir "karsidakinin dili" yok: o kutu gizlenir
+  const partnerCard = els.partnerLangSelect.closest('.lang-card');
+  if (partnerCard) partnerCard.classList.toggle('hidden', Boolean(state.roomCode && state.group));
+  const grid = els.participantsGrid;
+  if (!grid) return;
+  const list = state.roomCode ? state.participants : [];
+  grid.classList.toggle('hidden', list.length === 0);
+  const ids = new Set(list.map((p) => p.clientId));
+  for (const [id, tile] of tiles) {
+    if (!ids.has(id)) {
+      tile.remove();
+      tiles.delete(id);
+      remoteStreams.delete(id);
+      peerStates.delete(id);
+    }
+  }
+  list.forEach((p, index) => {
+    const isMe = p.clientId === state.clientId;
+    let tile = tiles.get(p.clientId);
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'p-tile';
+      tile.innerHTML = `
+        <video class="p-video hidden" autoplay playsinline muted></video>
+        <div class="p-avatar" aria-hidden="true"></div>
+        <div class="p-badges"><span class="p-speaking hidden">🎙️</span><span class="p-hand hidden"></span></div>
+        <div class="p-footer">
+          <span class="p-name" dir="auto"></span>
+          <span class="p-lang"></span>
+        </div>
+        <div class="p-note hidden"></div>
+      `;
+      if (isMe) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'p-cam-btn';
+        btn.addEventListener('click', toggleMyCamera);
+        tile.appendChild(btn);
+      }
+      tiles.set(p.clientId, tile);
+    }
+    if (grid.children[index] !== tile) grid.insertBefore(tile, grid.children[index] || null);
+
+    const name = censor(p.name || '', state.myLang) || '?';
+    tile.classList.toggle('me', isMe);
+    tile.querySelector('.p-name').textContent = isMe ? `${name} (${t('tile.you')})` : name;
+    tile.querySelector('.p-lang').textContent = findLanguage(p.lang).short;
+    tile.querySelector('.p-avatar').textContent = name.trim().charAt(0).toLocaleUpperCase();
+    const speaking = state.activeMicClientId === p.clientId;
+    tile.classList.toggle('speaking', speaking);
+    tile.querySelector('.p-speaking').classList.toggle('hidden', !speaking);
+    const qpos = state.group ? state.queue.indexOf(p.clientId) : -1;
+    const hand = tile.querySelector('.p-hand');
+    hand.classList.toggle('hidden', qpos < 0);
+    hand.textContent = qpos >= 0 ? `✋ ${qpos + 1}` : '';
+
+    // Goruntu: benim kameram yerel akistan, digerleri baglantidan
+    const video = tile.querySelector('.p-video');
+    const stream = isMe ? (state.videoMesh && state.videoMesh.localStream) : remoteStreams.get(p.clientId);
+    const camOn = isMe ? Boolean(state.videoMesh && state.videoMesh.cameraOn) : Boolean(p.cam);
+    const show = Boolean(camOn && stream);
+    if (show && video.srcObject !== stream) {
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }
+    if (!show && video.srcObject) video.srcObject = null;
+    video.classList.toggle('hidden', !show);
+    video.classList.toggle('mirror', isMe);
+    tile.querySelector('.p-avatar').classList.toggle('hidden', show);
+
+    // Kamerasi acik ama baglanti kurulamadi
+    const failed = !isMe && camOn && ['failed', 'disconnected'].includes(peerStates.get(p.clientId));
+    const note = tile.querySelector('.p-note');
+    note.classList.toggle('hidden', !failed);
+    note.textContent = failed ? t('video.noConn') : '';
+
+    if (isMe) {
+      const btn = tile.querySelector('.p-cam-btn');
+      const on = Boolean(state.videoMesh && state.videoMesh.cameraOn);
+      btn.textContent = on ? '📷 ✕' : '📷';
+      btn.classList.toggle('on', on);
+      btn.title = on ? t('video.off') : t('video.on');
+      btn.setAttribute('aria-label', btn.title);
+      btn.disabled = !state.videoMesh;
+    }
+  });
+}
+
+async function toggleMyCamera() {
+  const mesh = state.videoMesh;
+  if (!mesh || !state.roomCode) return;
+  if (mesh.cameraOn) {
+    mesh.stopCamera();
+    window.CeviriRelay.setCam(state.roomCode, false);
+  } else {
+    try {
+      await mesh.startCamera();
+      window.CeviriRelay.setCam(state.roomCode, true);
+    } catch {
+      showAlert(t('video.denied'));
+    }
+  }
+  renderParticipants();
+}
+
 function leaveOnlineRoom() {
   if (state.isActive) stopLiveSession();
+  if (state.videoMesh) {
+    state.videoMesh.destroy();
+    state.videoMesh = null;
+  }
+  state.group = false;
+  state.queue = [];
+  state.participants = [];
+  state.handRaised = false;
+  renderParticipants();
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
@@ -1430,6 +1696,16 @@ function bindEvents() {
   });
 
   els.mainToggleBtn.addEventListener('click', () => {
+    if (
+      !state.isActive &&
+      state.mode === 'online' &&
+      state.group &&
+      state.activeMicClientId &&
+      state.activeMicClientId !== state.clientId
+    ) {
+      toggleHand();
+      return;
+    }
     if (state.isActive) {
       stopLiveSession();
     } else {
@@ -1577,6 +1853,7 @@ function rerenderForUiLang() {
   renderSlot('badge');
   renderSlot('presence');
   fileCards.forEach((entry) => renderFileCard(entry));
+  renderParticipants();
   // Henuz konusulmamis yuz yuze kartlari yeni dilde goster
   [els.faceMeText, els.facePartnerText].forEach((el) => {
     if (!state.isActive && el.dataset.untouched !== 'false') el.textContent = t('face.tap');

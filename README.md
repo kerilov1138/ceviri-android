@@ -64,10 +64,32 @@ Română, Magyar, Български, हिन्दी, Bahasa Indonesia, Ti�
 Azərbaycan dili, فارسی, עברית.
 
 - İlk açılışta telefonun/tarayıcının dili otomatik seçilir (desteklenmiyorsa Türkçe).
-- Üst bardaki **🌐** düğmesinden veya Ayarlar'dan değiştirilir; seçim hatırlanır.
+- Üst bardaki **🌐** düğmesinden değiştirilir; seçim hatırlanır.
 - Arapça, Farsça ve İbranice'de ekran sağdan sola döner.
 - Dil listelerindeki dil adları da seçilen arayüz dilinde görünür.
 - Çeviriler `www/i18n-data.js` dosyasındadır (internetsiz çalışır).
+
+## Kamerayla yazı çevirme (yalnızca uygulamada)
+
+"Canlı Döngü"nün solundaki **📷 Kamera** sekmesi: menü, tabela veya belgenin
+fotoğrafını çek ya da galeriden seç; yazı cihazda okunur (Tesseract.js) ve çevrilir.
+
+- Yazının dili **Karşıdakinin dili**, çeviri **Benim dilim** kutusuna göre yapılır.
+- Her dilin okuma paketi ilk kullanımda bir kez iner (birkaç MB), sonra internetsiz okunur.
+- Okunan yazı düzeltilip "Yeniden Çevir" ile tekrar çevrilebilir; seslendirilir, kopyalanır.
+
+## Küfür filtresi
+
+Konuşulan veya yazılan metindeki küfürler, **çevrilmeden önce** `***` ile
+gizlenir; çeviri sonucu, online odada gelen mesajlar ve seslendirme de ayrıca
+filtrelenir. Böylece konuşma tanıma bir küfrü yıldızlamasa bile karşıya gitmez.
+Listeler 32 dil için `www/profanity-data.js` dosyasındadır.
+
+## Davet linki / QR ile gelenler
+
+Web sitesini (davet linki veya QR) açan kişi yalnızca **Online Oda**'yı görür;
+Kamera, Canlı Döngü ve Yüz Yüze sekmeleri sadece uygulamada vardır. Uygulamadaki
+QR kodu her zaman web sitesini açar (odadaysan doğrudan o odayı).
 
 ## Online oda modu (sunucusuz)
 

@@ -22,6 +22,7 @@
       </div>
 
       <div class="mode-switch" role="tablist" aria-label="Çeviri Modu" data-i18n-attr="aria-label:mode.aria">
+        <button id="modeCameraBtn" class="mode-btn mode-camera-btn" role="tab" aria-selected="false" data-mode="camera"><span aria-hidden="true">📷</span> <span data-i18n="mode.camera">Kamera</span></button>
         <button id="modeLoopBtn" class="mode-btn active" role="tab" aria-selected="true" data-mode="loop" data-i18n="mode.loop">Canlı Döngü</button>
         <button id="modeFaceBtn" class="mode-btn" role="tab" aria-selected="false" data-mode="face" data-i18n="mode.face">Yüz Yüze</button>
         <button id="modeOnlineBtn" class="mode-btn" role="tab" aria-selected="false" data-mode="online" data-i18n="mode.online">Online Oda</button>
@@ -41,9 +42,10 @@
         <button id="qrBtn" class="icon-btn" title="QR Kod" aria-label="QR Kod" data-i18n-attr="title:btn.qr;aria-label:btn.qr">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M17 17h4v4h-4z"/><path d="M14 20h1"/><path d="M20 14h1"/></svg>
         </button>
-        <button id="uiLangBtn" class="icon-btn ui-lang-btn" title="Arayüz Dili" aria-label="Arayüz Dili" data-i18n-attr="title:btn.uiLang;aria-label:btn.uiLang">
-          <span aria-hidden="true">🌐</span><span id="uiLangBtnCode" class="ui-lang-code">TR</span>
-        </button>
+        <div id="uiLangBtn" class="icon-btn ui-lang-btn" title="Arayüz Dili" data-i18n-attr="title:btn.uiLang">
+          <span aria-hidden="true">🌐</span><span id="uiLangBtnCode" class="ui-lang-code" aria-hidden="true">TR</span>
+          <select id="uiLangSelect" class="ui-lang-native" aria-label="Arayüz Dili" data-i18n-attr="aria-label:btn.uiLang"></select>
+        </div>
         <button id="settingsBtn" class="icon-btn" title="Ayarlar" aria-label="Ayarlar" data-i18n-attr="title:btn.settings;aria-label:btn.settings">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -107,6 +109,39 @@
     <!-- Main Workspace -->
     <main class="main-grid">
       <!-- Live Stage (Loop Mode) -->
+      <section id="cameraStage" class="camera-stage hidden" aria-label="Kamerayla yazı çevirme" data-i18n-attr="aria-label:cam.aria">
+        <p class="camera-hint" data-i18n="cam.hint">Menü, tabela veya belgenin fotoğrafını çekin ya da galeriden seçin; yazı okunup çevrilir.</p>
+        <p id="cameraDirection" class="camera-direction" dir="auto"></p>
+        <div class="camera-actions">
+          <label class="online-btn primary camera-pick">
+            <span aria-hidden="true">📷</span> <span data-i18n="cam.take">Fotoğraf Çek</span>
+            <input id="cameraCaptureInput" class="visually-hidden-input" type="file" accept="image/*" capture="environment" />
+          </label>
+          <label class="online-btn secondary camera-pick">
+            <span aria-hidden="true">🖼️</span> <span data-i18n="cam.pick">Galeriden Seç</span>
+            <input id="cameraPickInput" class="visually-hidden-input" type="file" accept="image/*" />
+          </label>
+        </div>
+        <div id="cameraPreviewWrap" class="camera-preview hidden">
+          <img id="cameraPreview" alt="" />
+        </div>
+        <div id="cameraStatus" class="camera-status hidden" role="status" aria-live="polite">
+          <div class="camera-progress"><div id="cameraProgressBar" class="camera-progress-bar"></div></div>
+          <span id="cameraStatusText"></span>
+        </div>
+        <div id="cameraResult" class="camera-result hidden">
+          <label class="lang-label" for="cameraSourceText" data-i18n="cam.recognized">OKUNAN YAZI</label>
+          <textarea id="cameraSourceText" class="camera-text" rows="4" dir="auto"></textarea>
+          <button id="cameraRetranslateBtn" class="mini-btn camera-retranslate" type="button" data-i18n="cam.retranslate">↻ Yeniden Çevir</button>
+          <span class="lang-label" data-i18n="cam.translation">ÇEVİRİ</span>
+          <div id="cameraTranslatedText" class="camera-text camera-translated" dir="auto"></div>
+          <div class="msg-actions">
+            <button id="cameraSpeakBtn" class="mini-btn" type="button" data-i18n="msg.replay">🔊 Seslendir</button>
+            <button id="cameraCopyBtn" class="mini-btn" type="button" data-i18n="msg.copy">📋 Kopyala</button>
+          </div>
+        </div>
+      </section>
+
       <section id="loopStage" class="live-stage" aria-label="Canlı Çeviri Sahnesi" data-i18n-attr="aria-label:stage.aria">
         <div class="stage-orb-wrap">
           <canvas id="visualizerCanvas" width="220" height="220" aria-hidden="true"></canvas>
@@ -203,14 +238,6 @@
         <button id="closeSettingsBtn" class="icon-btn" aria-label="Ayarları Kapat" data-i18n-attr="aria-label:settings.close">&times;</button>
       </div>
       <div class="modal-body">
-        <label class="setting-row" for="uiLangSelect">
-          <div>
-            <strong>🌐 <span data-i18n="btn.uiLang">Arayüz Dili</span></strong>
-            <span data-i18n="settings.uiLangDesc">Uygulamadaki tüm yazıların dili</span>
-          </div>
-          <select id="uiLangSelect" class="lang-select ui-lang-select"></select>
-        </label>
-
         <label class="setting-row">
           <div>
             <strong data-i18n="settings.autoSpeak">Otomatik Sesli Okuma</strong>

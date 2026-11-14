@@ -1,8 +1,20 @@
 import { LANGUAGES, findLanguage } from './languages.js';
 import { drawQrCode } from './qr.js';
 import { initI18n, t, langName, setUiLang, getUiLang, onUiLangChange, UI_LANGS } from './i18n.js';
+import { censor, stripMaskForSpeech } from './profanity.js';
+import { initCamera } from './camera.js';
+
+// Online oda modulu (online-relay.js) karsiya gidecek metni de filtrelesin
+window.CeviriCensor = censor;
 
 const IS_NATIVE_APP = Boolean(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+// Davet linki / QR ile web sitesinden gelen kisi (misafir): yalnizca Online Oda gorur.
+// Kamera, Canli Dongu ve Yuz Yuze sekmeleri yalnizca uygulamada (APK) vardir.
+const IS_GUEST = !IS_NATIVE_APP;
+if (IS_GUEST) document.documentElement.classList.add('guest-mode');
+
+let cameraCtl = null; // kamera sekmesi (yalnizca uygulamada)
 
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -78,6 +90,8 @@ const els = {
   myLangSelect: document.getElementById('myLangSelect'),
   partnerLangSelect: document.getElementById('partnerLangSelect'),
   swapLangsBtn: document.getElementById('swapLangsBtn'),
+  modeCameraBtn: document.getElementById('modeCameraBtn'),
+  cameraStage: document.getElementById('cameraStage'),
   modeLoopBtn: document.getElementById('modeLoopBtn'),
   modeFaceBtn: document.getElementById('modeFaceBtn'),
   modeOnlineBtn: document.getElementById('modeOnlineBtn'),
@@ -208,6 +222,7 @@ function updateLanguageBadges() {
     els.myLangCardLabel.textContent = t('lang.mine');
     els.partnerLangCardLabel.textContent = t('lang.partner');
   }
+  if (cameraCtl) cameraCtl.updateDirection();
 }
 
 function setPhase(phase) {
@@ -324,6 +339,7 @@ function stopSpeaking() {
 }
 
 function speakText(text, langCode) {
+  text = stripMaskForSpeech(censor(text, langCode));
   return new Promise((resolve) => {
     if (!('speechSynthesis' in window) || !text) {
       resolve();
@@ -519,12 +535,12 @@ function startListening() {
         state.pendingTranscript = interim.trim();
       }
       if (interim.trim()) {
-        setInterimMessage(interim.trim(), true);
+        setInterimMessage(censor(interim.trim(), listenLang), true);
       }
       return;
     }
 
-    const display = (finalTranscript + interim).trim();
+    const display = censor((finalTranscript + interim).trim(), listenLang);
     state.pendingTranscript = display;
     if (display) {
       setInterimMessage(display, true);
@@ -607,6 +623,9 @@ function startListening() {
 }
 
 async function handleUtterance(text, speaker) {
+  // Kufurler karsiya hic gitmesin: cevirmeden once kaynak dilde filtrele
+  text = censor(text, state.mode === 'online' || speaker === 'me' ? state.myLang : state.partnerLang);
+  if (!text.replace(/[\s*.,!?]+/g, '')) return;
   if (state.mode === 'online') {
     if (!state.roomCode) {
       showAlert(t('err.needRoom'));
@@ -628,7 +647,7 @@ async function handleUtterance(text, speaker) {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const msg = await res.json();
-      setInterimMessage(msg.translatedText || text, true);
+      setInterimMessage(censor(msg.translatedText || text, msg.targetLang || state.partnerLang), true);
       // SSE chat_message will append to stream for both participants
     } catch (err) {
       showAlert(t('err.sendFailed', { err: err.message }));
@@ -659,7 +678,7 @@ async function handleUtterance(text, speaker) {
     }
 
     const data = await res.json();
-    const translatedText = data.translatedText || '';
+    const translatedText = censor(data.translatedText || '', targetLang);
 
     appendMessage({
       speaker,
@@ -705,6 +724,8 @@ function appendMessage({
 }) {
   if (id && state.seenMessageIds.has(id)) return;
   if (id) state.seenMessageIds.add(id);
+  originalText = censor(originalText, sourceLang);
+  translatedText = censor(translatedText, targetLang);
 
   els.emptyState.classList.add('hidden');
 
@@ -851,6 +872,8 @@ function setMode(mode) {
   if (state.isActive) stopLiveSession();
   state.mode = mode;
 
+  els.modeCameraBtn.classList.toggle('active', mode === 'camera');
+  els.modeCameraBtn.setAttribute('aria-selected', String(mode === 'camera'));
   els.modeLoopBtn.classList.toggle('active', mode === 'loop');
   els.modeLoopBtn.setAttribute('aria-selected', String(mode === 'loop'));
   els.modeFaceBtn.classList.toggle('active', mode === 'face');
@@ -858,7 +881,8 @@ function setMode(mode) {
   els.modeOnlineBtn.classList.toggle('active', mode === 'online');
   els.modeOnlineBtn.setAttribute('aria-selected', String(mode === 'online'));
 
-  els.loopStage.classList.toggle('hidden', mode === 'face');
+  els.loopStage.classList.toggle('hidden', mode === 'face' || mode === 'camera');
+  els.cameraStage.classList.toggle('hidden', mode !== 'camera');
   els.faceStage.classList.toggle('hidden', mode !== 'face');
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
   els.turnControls.classList.toggle('hidden', mode === 'online');
@@ -998,7 +1022,7 @@ function connectToRoom(roomCode) {
       const wasActive = state.isActive;
       if (wasActive) abortRecognition();
       setPhase('speaking');
-      setInterimMessage(`${msg.senderName}: ${msg.translatedText}`, true);
+      setInterimMessage(`${msg.senderName}: ${censor(msg.translatedText, state.myLang)}`, true);
       await speakText(msg.translatedText, state.myLang);
       if (wasActive && state.isActive) {
         state.resumeTimer = setTimeout(() => {
@@ -1123,6 +1147,7 @@ function bindEvents() {
     if (state.isActive) startListening();
   });
 
+  els.modeCameraBtn.addEventListener('click', () => setMode('camera'));
   els.modeLoopBtn.addEventListener('click', () => setMode('loop'));
   els.modeFaceBtn.addEventListener('click', () => setMode('face'));
   els.modeOnlineBtn.addEventListener('click', () => setMode('online'));
@@ -1207,7 +1232,7 @@ function bindEvents() {
     const targetUrl =
       state.mode === 'online' && state.roomCode
         ? `${baseUrl}/?room=${encodeURIComponent(state.roomCode)}`
-        : baseUrl;
+        : `${baseUrl.replace(/\/+$/, '')}/`;
 
     els.qrUrlInput.value = targetUrl;
     drawQrCode(els.qrCanvas, targetUrl, 240);
@@ -1347,18 +1372,36 @@ function bindUiLang() {
   els.messageCount.textContent = t('stream.count', { n: 0 });
   const sel = document.getElementById('uiLangSelect');
   if (sel) sel.addEventListener('change', (e) => setUiLang(e.target.value));
-  const btn = document.getElementById('uiLangBtn');
-  if (btn) {
-    btn.addEventListener('click', () => {
-      els.settingsModal.classList.remove('hidden');
-      setTimeout(() => sel && sel.focus(), 50);
-    });
-  }
   onUiLangChange(rerenderForUiLang);
+}
+
+async function translateViaApi(text, sourceLang, targetLang) {
+  const res = await fetch('/api/translate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, sourceLang, targetLang }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.translatedText || '';
+}
+
+function setupCamera() {
+  if (IS_GUEST) return; // Misafirde kamera sekmesi yok
+  cameraCtl = initCamera({
+    t,
+    censor,
+    showAlert,
+    langName: (code) => displayLangName(code, findLanguage(code).name),
+    getLangs: () => ({ from: state.partnerLang, to: state.myLang }),
+    translate: translateViaApi,
+    speak: (text, lang) => speakText(text, lang),
+  });
 }
 
 function init() {
   bindUiLang();
+  setupCamera();
   populateLanguageSelects();
   updateTurnUI();
   drawIdleOrb();
@@ -1380,7 +1423,7 @@ function init() {
       els.onlineNameInput.value = state.myName;
     }
     els.onlineNameInput.focus();
-  } else if (modeFromUrl === 'online') {
+  } else if (modeFromUrl === 'online' || IS_GUEST) {
     setMode('online');
   }
 

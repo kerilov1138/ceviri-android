@@ -1003,9 +1003,22 @@ select {
   font-size: 15px;
   line-height: 1;
 }
-.ui-lang-select {
-  max-width: 190px;
-  flex-shrink: 0;
+/* Gorunmez yerel liste dugmenin tamamini kaplar: dokununca dil listesi acilir */
+.ui-lang-btn {
+  position: relative;
+  cursor: pointer;
+}
+.ui-lang-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 16px;
+  border: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 /* Sagdan sola diller (Arapca, Farsca, Ibranice) */
@@ -1023,4 +1036,142 @@ html[dir='rtl'] .invite-url,
 html[dir='rtl'] #roomCodeBadge {
   direction: ltr;
   unicode-bidi: plaintext;
+}
+
+/* Misafir (davet linki / QR ile web sitesinden gelen): yalnizca Online Oda */
+.guest-mode #modeCameraBtn,
+.guest-mode #modeLoopBtn,
+.guest-mode #modeFaceBtn,
+.guest-mode #cameraStage,
+.guest-mode #faceStage {
+  display: none !important;
+}
+
+/* 4 sekme dar ekranda tasmasin: yatay kaydirilabilir */
+.mode-switch {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mode-switch::-webkit-scrollbar {
+  display: none;
+}
+.mode-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Kamerayla yazi cevirme */
+.camera-stage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.camera-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.camera-direction {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.camera-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.camera-pick {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 160px;
+  justify-content: center;
+  padding: 12px 14px;
+  font-size: 0.95rem;
+}
+.visually-hidden-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.camera-preview {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  max-height: 260px;
+  display: flex;
+  justify-content: center;
+}
+.camera-preview img {
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+}
+.camera-status {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+.camera-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.camera-progress-bar {
+  height: 100%;
+  width: 0;
+  background: var(--me);
+  transition: width 0.2s ease;
+}
+.camera-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.camera-text {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+.camera-translated {
+  border-color: var(--me);
+  background: var(--me-soft);
+  min-height: 3em;
+}
+.camera-retranslate {
+  align-self: flex-start;
+}
+@media (max-width: 440px) {
+  .mode-switch {
+    gap: 2px;
+  }
+  .mode-btn {
+    padding: 7px 9px;
+    font-size: 0.78rem;
+  }
 }

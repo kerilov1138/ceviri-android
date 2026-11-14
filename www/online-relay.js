@@ -395,6 +395,10 @@
     this.self = null;
   };
 
+  function censorText(text, lang) {
+    return typeof window.CeviriCensor === 'function' ? window.CeviriCensor(text, lang) : text;
+  }
+
   function sanitizeChat(raw, code) {
     if (!raw || typeof raw !== 'object') return null;
     var text = typeof raw.originalText === 'string' ? raw.originalText.slice(0, 4000) : '';
@@ -406,8 +410,8 @@
       senderName: String(raw.senderName || 'Kullanici').slice(0, 40),
       sourceLang: String(raw.sourceLang || 'tr-TR').slice(0, 16),
       targetLang: String(raw.targetLang || 'en-US').slice(0, 16),
-      originalText: text,
-      translatedText: typeof raw.translatedText === 'string' ? raw.translatedText.slice(0, 8000) : '',
+      originalText: censorText(text, raw.sourceLang),
+      translatedText: censorText(typeof raw.translatedText === 'string' ? raw.translatedText.slice(0, 8000) : '', raw.targetLang),
       latencyMs: typeof raw.latencyMs === 'number' ? raw.latencyMs : undefined,
       timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
     };
@@ -523,6 +527,7 @@
       if (!r || !r.self) return json(404, { error: 'Oda bulunamadi' });
       var text = typeof body.text === 'string' ? body.text.trim() : '';
       if (!text) return json(400, { error: 'text is required' });
+      var censorFn = typeof window.CeviriCensor === 'function' ? window.CeviriCensor : function (x) { return x; };
       if (transport.connectedCount() === 0) return json(503, { error: 'Online baglanti yok, internetinizi kontrol edin' });
 
       var sourceLang = (typeof body.sourceLang === 'string' && body.sourceLang.trim()) || r.self.lang || 'tr-TR';
@@ -531,9 +536,12 @@
         (typeof body.fallbackTargetLang === 'string' && body.fallbackTargetLang) ||
         (normBase(sourceLang) === 'tr' ? 'en-US' : 'tr-TR');
 
+      // Kufur filtresi: karsiya giden metin ve ceviri
+      text = censorFn(text, sourceLang);
       var result;
       try {
         result = await translateFn(text, sourceLang, targetLang);
+        result = Object.assign({}, result, { translatedText: censorFn(result.translatedText || '', targetLang) });
       } catch (err) {
         return json(502, { error: 'Translation failed', detail: String(err && err.message || err) });
       }
@@ -570,12 +578,12 @@
   function onlineInfo() {
     transport.start();
     var n = transport.connectedCount();
-    if (transport.error) return { onlineMode: true, status: 'error', publicUrl: null, error: transport.error };
+    if (transport.error) return { onlineMode: true, status: 'error', publicUrl: webUrl() || null, error: transport.error };
     if (n > 0) return { onlineMode: true, status: 'ready', publicUrl: webUrl(), error: null, brokers: n };
     if (Date.now() - transport.startedAt > 20000) {
-      return { onlineMode: true, status: 'error', publicUrl: null, error: 'Online sunucuya ulasilamadi - internetinizi kontrol edin' };
+      return { onlineMode: true, status: 'error', publicUrl: webUrl() || null, error: 'Online sunucuya ulasilamadi - internetinizi kontrol edin' };
     }
-    return { onlineMode: true, status: 'starting', publicUrl: null, error: null };
+    return { onlineMode: true, status: 'starting', publicUrl: webUrl() || null, error: null };
   }
 
   window.CeviriRelay = {

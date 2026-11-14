@@ -55,6 +55,20 @@ GitHub Actions her push'ta uygulamanın web sürümünü ücretsiz olarak
 - Mikrofon için tarayıcı izin ister. iPhone'da seslendirmenin çalışması için
   sayfada bir kez herhangi bir yere dokunmak gerekir.
 
+## Arayüz dili (32 dil)
+
+Uygulamadaki tüm yazılar 32 dilde hazır: Türkçe, English, Deutsch, Français,
+Español, Italiano, Português, Русский, العربية, 日本語, 한국어, 简体中文, 繁體中文,
+Nederlands, Polski, Українська, Ελληνικά, Svenska, Norsk, Dansk, Suomi, Čeština,
+Română, Magyar, Български, हिन्दी, Bahasa Indonesia, Tiếng Việt, ไทย,
+Azərbaycan dili, فارسی, עברית.
+
+- İlk açılışta telefonun/tarayıcının dili otomatik seçilir (desteklenmiyorsa Türkçe).
+- Üst bardaki **🌐** düğmesinden veya Ayarlar'dan değiştirilir; seçim hatırlanır.
+- Arapça, Farsça ve İbranice'de ekran sağdan sola döner.
+- Dil listelerindeki dil adları da seçilen arayüz dilinde görünür.
+- Çeviriler `www/i18n-data.js` dosyasındadır (internetsiz çalışır).
+
 ## Online oda modu (sunucusuz)
 
 Masaüstü sürümde odaları bilgisayardaki `server.js` yönetir. Telefonda sunucu

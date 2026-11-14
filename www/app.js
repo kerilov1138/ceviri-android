@@ -1,5 +1,8 @@
 import { LANGUAGES, findLanguage } from './languages.js';
 import { drawQrCode } from './qr.js';
+import { initI18n, t, langName, setUiLang, getUiLang, onUiLangChange, UI_LANGS } from './i18n.js';
+
+const IS_NATIVE_APP = Boolean(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
 
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -152,13 +155,28 @@ function hideAlert() {
   els.alertBanner.classList.add('hidden');
 }
 
+// Tek varyantli dillerde bolge adini gosterme: "Turkish (Turkey)" yerine "Turkish"
+const LANG_BASE_COUNT = LANGUAGES.reduce((acc, l) => {
+  const base = l.code.split('-')[0];
+  acc[base] = (acc[base] || 0) + 1;
+  return acc;
+}, {});
+
+function displayLangName(code, fallback) {
+  const base = String(code || '').split('-')[0];
+  return langName(LANG_BASE_COUNT[base] === 1 ? base : code, fallback);
+}
+
 function populateLanguageSelects() {
   const buildOptions = (selectEl, selectedCode) => {
     selectEl.innerHTML = '';
     for (const lang of LANGUAGES) {
       const opt = document.createElement('option');
       opt.value = lang.code;
-      opt.textContent = `${lang.name} (${lang.nativeName})`;
+      const localName = displayLangName(lang.code, lang.name);
+      opt.textContent = localName.toLocaleLowerCase() === lang.nativeName.toLocaleLowerCase()
+        ? lang.nativeName
+        : `${localName} (${lang.nativeName})`;
       if (lang.code === selectedCode) opt.selected = true;
       selectEl.appendChild(opt);
     }
@@ -171,8 +189,8 @@ function populateLanguageSelects() {
 function updateLanguageBadges() {
   const myLangObj = findLanguage(state.myLang);
   const partnerLangObj = findLanguage(state.partnerLang);
-  const meDisplay = state.mode === 'online' && state.myName ? state.myName : 'Ben';
-  const partnerDisplay = state.mode === 'online' && state.partnerName ? state.partnerName : 'Karşıdaki';
+  const meDisplay = state.mode === 'online' && state.myName ? state.myName : t('who.me');
+  const partnerDisplay = state.mode === 'online' && state.partnerName ? state.partnerName : t('who.partner');
 
   els.turnMeLabel.textContent = `${meDisplay} (${myLangObj.short})`;
   els.turnPartnerLabel.textContent = `${partnerDisplay} (${partnerLangObj.short})`;
@@ -181,14 +199,14 @@ function updateLanguageBadges() {
 
   if (state.mode === 'online') {
     els.myLangCardLabel.textContent = state.myName
-      ? `BENİM DİLİM · ${state.myName.toUpperCase()}`
-      : 'BENİM DİLİM';
+      ? t('lang.mineNamed', { name: state.myName.toLocaleUpperCase() })
+      : t('lang.mine');
     els.partnerLangCardLabel.textContent = state.partnerName
-      ? `KARŞIDAKİ · ${state.partnerName.toUpperCase()}`
-      : 'KARŞIDAKİNİN DİLİ';
+      ? t('lang.partnerNamed', { name: state.partnerName.toLocaleUpperCase() })
+      : t('lang.partner');
   } else {
-    els.myLangCardLabel.textContent = 'BENİM DİLİM';
-    els.partnerLangCardLabel.textContent = 'KARŞIDAKİNİN DİLİ';
+    els.myLangCardLabel.textContent = t('lang.mine');
+    els.partnerLangCardLabel.textContent = t('lang.partner');
   }
 }
 
@@ -197,12 +215,12 @@ function setPhase(phase) {
   els.statusPill.dataset.state = phase;
 
   const labels = {
-    idle: 'Hazır',
-    listening: 'Dinleniyor...',
-    translating: 'Çevriliyor...',
-    speaking: 'Seslendiriliyor...',
+    idle: t('status.idle'),
+    listening: t('status.listening'),
+    translating: t('status.translating'),
+    speaking: t('status.speaking'),
   };
-  els.statusText.textContent = labels[phase] || 'Hazır';
+  els.statusText.textContent = labels[phase] || t('status.idle');
 }
 
 function updateTurnUI() {
@@ -219,20 +237,56 @@ function updateTurnUI() {
   els.mainToggleBtn.disabled = lockedByRemote;
   els.mainToggleBtn.classList.toggle('locked-remote', lockedByRemote);
   els.orbLabel.textContent = lockedByRemote
-    ? 'Sıra Karşıda'
+    ? t('orb.locked')
     : state.isActive
       ? 'Durdur'
-      : 'Başlat';
+      : t('orb.start');
 
   els.faceMeCard.classList.toggle('active-me', state.isActive && isMe);
   els.facePartnerCard.classList.toggle('active-partner', state.isActive && !isMe);
   els.faceMeBtn.querySelector('span').textContent =
-    state.isActive && isMe ? 'Durdur' : 'Konuş';
+    state.isActive && isMe ? t('orb.stop') : t('face.speak');
   els.facePartnerBtn.querySelector('span').textContent =
-    state.isActive && !isMe ? 'Durdur' : 'Konuş';
+    state.isActive && !isMe ? t('orb.stop') : t('face.speak');
+}
+
+// Dil degisince yeniden yazilabilmesi icin anahtarla ayarlanan metinler
+const i18nSlots = { interim: null, badge: null, presence: null };
+
+function renderSlot(slot) {
+  const v = i18nSlots[slot];
+  if (!v) return;
+  const vars = { ...(v.vars || {}) };
+  if (vars.lang && /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(vars.lang)) vars.lang = displayLangName(vars.lang, vars.langFallback);
+  const text = t(v.key, vars);
+  if (slot === 'interim') {
+    if (v.html) els.interimText.innerHTML = text;
+    else els.interimText.textContent = text;
+    els.interimText.classList.remove('live');
+  } else if (slot === 'badge') {
+    els.tunnelStatusBadge.textContent = text;
+  } else if (slot === 'presence') {
+    els.partnerPresenceText.textContent = text;
+  }
+}
+
+function setInterimKey(key, vars, html = false) {
+  i18nSlots.interim = { key, vars, html };
+  renderSlot('interim');
+}
+
+function setBadgeKey(key, vars) {
+  i18nSlots.badge = { key, vars };
+  renderSlot('badge');
+}
+
+function setPresenceKey(key, vars) {
+  i18nSlots.presence = { key, vars };
+  renderSlot('presence');
 }
 
 function setInterimMessage(text, isLive = false) {
+  i18nSlots.interim = null;
   els.interimText.textContent = text;
   els.interimText.classList.toggle('live', isLive);
 }
@@ -401,7 +455,7 @@ function abortRecognition() {
 function startListening() {
   if (!SpeechRecognitionAPI) {
     showAlert(
-      'Tarayıcınız canlı ses tanımayı desteklemiyor. Lütfen Google Chrome veya Microsoft Edge kullanın ya da alttaki metin kutusunu kullanın.'
+      t('err.noSR')
     );
     stopLiveSession();
     return;
@@ -426,10 +480,11 @@ function startListening() {
   state.recognition = recognition;
 
   setPhase('listening');
-  const promptMsg = `${isMe ? 'Sizin sıranız' : 'Karşıdakinin sırası'} — ${langInfo.name} dinleniyor...`;
+  const listenName = displayLangName(listenLang, langInfo.name);
+  const promptMsg = t(isMe ? 'listen.mine' : 'listen.partner', { lang: listenName });
   setInterimMessage(promptMsg, false);
   if (state.mode === 'face') {
-    (isMe ? els.faceMeText : els.facePartnerText).textContent = `${langInfo.name} dinleniyor...`;
+    (isMe ? els.faceMeText : els.facePartnerText).textContent = t('listen.short', { lang: listenName });
   }
 
   let finalTranscript = '';
@@ -482,12 +537,12 @@ function startListening() {
   recognition.onerror = (event) => {
     if (gen !== state.recognitionGen) return;
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-      showAlert('Mikrofon izni reddedildi veya ses tanıma servisi yok. Ayarlar > Uygulamalar > CEVIRI > İzinler bölümünden mikrofona izin verin ve Google uygulamasının yüklü olduğundan emin olun.');
+      showAlert(t(IS_NATIVE_APP ? 'err.micDeniedApp' : 'err.micDeniedWeb'));
       stopLiveSession();
       return;
     }
     if (event.error === 'audio-capture') {
-      showAlert('Mikrofon bulunamadı veya başka bir uygulama tarafından kullanılıyor.');
+      showAlert(t('err.micMissing'));
       stopLiveSession();
       return;
     }
@@ -554,7 +609,7 @@ function startListening() {
 async function handleUtterance(text, speaker) {
   if (state.mode === 'online') {
     if (!state.roomCode) {
-      showAlert('Lütfen önce bir Online Oda oluşturun veya oda koduyla katılın.');
+      showAlert(t('err.needRoom'));
       return;
     }
 
@@ -565,7 +620,7 @@ async function handleUtterance(text, speaker) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clientId: state.clientId,
-          senderName: state.myName || 'Ben',
+          senderName: state.myName || t('who.me'),
           text,
           sourceLang: state.myLang,
           fallbackTargetLang: state.partnerLang,
@@ -576,7 +631,7 @@ async function handleUtterance(text, speaker) {
       setInterimMessage(msg.translatedText || text, true);
       // SSE chat_message will append to stream for both participants
     } catch (err) {
-      showAlert(`Mesaj gönderilemedi: ${err.message}`);
+      showAlert(t('err.sendFailed', { err: err.message }));
     } finally {
       if (state.isActive) {
         setPhase('listening');
@@ -619,6 +674,8 @@ async function handleUtterance(text, speaker) {
       // Show translation on the opposite person's card
       const targetEl = speaker === 'me' ? els.facePartnerText : els.faceMeText;
       targetEl.textContent = translatedText;
+      els.faceMeText.dataset.untouched = 'false';
+      els.facePartnerText.dataset.untouched = 'false';
     } else {
       setInterimMessage(translatedText, true);
     }
@@ -628,7 +685,7 @@ async function handleUtterance(text, speaker) {
       await speakText(translatedText, targetLang);
     }
   } catch (err) {
-    showAlert(`Çeviri hatası: ${err.message}. İnternet bağlantınızı kontrol edin.`);
+    showAlert(t('err.translate', { err: err.message }));
   } finally {
     if (!state.isActive) {
       setPhase('idle');
@@ -654,15 +711,15 @@ function appendMessage({
   const msg = {
     id: id || Date.now() + Math.random(),
     speaker,
-    senderName: senderName || (speaker === 'me' ? 'BEN' : 'KARŞIDAKİ'),
+    senderName: senderName || (speaker === 'me' ? t('who.meUpper') : t('who.partnerUpper')),
     sourceLang,
     targetLang,
     originalText,
     translatedText,
-    time: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+    time: new Date().toLocaleTimeString(getUiLang(), { hour: '2-digit', minute: '2-digit' }),
   };
   state.messages.push(msg);
-  els.messageCount.textContent = `${state.messages.length} mesaj`;
+  els.messageCount.textContent = t('stream.count', { n: state.messages.length });
 
   const card = document.createElement('article');
   card.className = `msg-card ${speaker}`;
@@ -676,16 +733,19 @@ function appendMessage({
       <span class="msg-speaker">${whoLabel} · ${srcShort} → ${tgtShort}</span>
       <span>${msg.time}${typeof latencyMs === 'number' ? ` · ${latencyMs}ms` : ''}</span>
     </div>
-    <div class="msg-original"></div>
-    <div class="msg-translated"></div>
+    <div class="msg-original" dir="auto"></div>
+    <div class="msg-translated" dir="auto"></div>
     <div class="msg-actions">
-      <button class="mini-btn replay-btn" type="button">🔊 Seslendir</button>
-      <button class="mini-btn copy-btn" type="button">📋 Kopyala</button>
+      <button class="mini-btn replay-btn" type="button"></button>
+      <button class="mini-btn copy-btn" type="button"></button>
     </div>
   `;
 
   card.querySelector('.msg-original').textContent = originalText;
   card.querySelector('.msg-translated').textContent = translatedText;
+
+  card.querySelector('.replay-btn').textContent = t('msg.replay');
+  card.querySelector('.copy-btn').textContent = t('msg.copy');
 
   card.querySelector('.replay-btn').addEventListener('click', () => {
     speakText(translatedText, targetLang);
@@ -695,8 +755,8 @@ function appendMessage({
     try {
       await navigator.clipboard.writeText(translatedText);
       const btn = e.currentTarget;
-      btn.textContent = '✓ Kopyalandı';
-      setTimeout(() => (btn.textContent = '📋 Kopyala'), 1400);
+      btn.textContent = t('msg.copied');
+      setTimeout(() => (btn.textContent = t('msg.copy')), 1400);
     } catch {
       // Ignore clipboard errors
     }
@@ -719,7 +779,7 @@ async function setRemoteMicLock(active) {
       state.activeMicClientId = errData.activeMicClientId || 'remote';
       state.activeMicName = errData.activeMicName || null;
       updateTurnUI();
-      showAlert(`${state.activeMicName || 'Karşı taraf'} şu anda konuşuyor. Mikrofonunu kapatmasını bekleyin.`);
+      showAlert(t('err.partnerSpeaking', { name: state.activeMicName || t('online.otherSide') }));
       return false;
     }
     if (res.ok) {
@@ -738,11 +798,11 @@ async function startLiveSession(speaker = state.activeSpeaker) {
   hideAlert();
   if (state.mode === 'online') {
     if (!state.roomCode) {
-      showAlert('Lütfen önce bir Online Oda oluşturun veya oda koduyla katılın.');
+      showAlert(t('err.needRoom'));
       return;
     }
     if (state.activeMicClientId && state.activeMicClientId !== state.clientId) {
-      showAlert(`${state.activeMicName || 'Karşı taraf'} şu anda konuşuyor. Bitirmesini bekleyin.`);
+      showAlert(t('err.partnerSpeaking', { name: state.activeMicName || t('online.otherSide') }));
       return;
     }
     const acquired = await setRemoteMicLock(true);
@@ -775,10 +835,7 @@ async function stopLiveSession() {
 
   setPhase('idle');
   updateTurnUI();
-  setInterimMessage(
-    "Canlı çeviri durduruldu. Devam etmek için Başlat'a basın.",
-    false
-  );
+  setInterimKey('hint.stopped');
 }
 
 function switchTurn(newSpeaker) {
@@ -845,21 +902,22 @@ async function pollOnlineInfo() {
 
       if (info.onlineMode) {
         if (info.status === 'ready' && info.publicUrl) {
-          els.tunnelStatusBadge.textContent = window.CeviriRelay ? 'Online Bağlantı Hazır (şifreli)' : 'Genel Bağlantı Hazır';
+          setBadgeKey('online.ready');
           updateInviteLink();
           return;
         }
         if (info.status === 'error') {
-          els.tunnelStatusBadge.textContent = info.error || 'Tünel hatası';
+          if (window.CeviriRelay) setBadgeKey('online.unreachable');
+          else els.tunnelStatusBadge.textContent = info.error || 'Tünel hatası';
           updateInviteLink();
           if (window.CeviriRelay) state.onlinePollTimer = setTimeout(pollOnlineInfo, 4000);
           return;
         }
-        els.tunnelStatusBadge.textContent = 'Genel davet linki oluşturuluyor...';
+        setBadgeKey('online.connecting');
         state.onlinePollTimer = setTimeout(pollOnlineInfo, 2000);
       } else {
         els.tunnelStatusBadge.textContent = window.location.protocol === 'https:'
-          ? 'Online Bağlantı'
+          ? t('online.connected')
           : 'Yerel Ağ (Farklı PC için CEVIRI-Baslat-online.bat kullanın)';
         updateInviteLink();
       }
@@ -883,7 +941,7 @@ function connectToRoom(roomCode) {
 
   const params = new URLSearchParams({
     clientId: state.clientId,
-    name: state.myName || 'Ben',
+    name: state.myName || t('who.me'),
     lang: state.myLang,
   });
 
@@ -903,11 +961,11 @@ function connectToRoom(roomCode) {
       els.partnerLangSelect.value = partner.lang;
       els.partnerLangSelect.disabled = true;
       const partnerLangInfo = findLanguage(partner.lang);
-      els.partnerPresenceText.textContent = `${partner.name} (${partnerLangInfo.name}) bağlı`;
+      setPresenceKey('online.partnerConnected', { name: partner.name, lang: partner.lang, langFallback: partnerLangInfo.name });
     } else {
       state.partnerName = '';
       els.partnerLangSelect.disabled = false;
-      els.partnerPresenceText.textContent = 'Karşı taraf bekleniyor...';
+      setPresenceKey('online.waiting');
     }
 
     updateLanguageBadges();
@@ -915,12 +973,9 @@ function connectToRoom(roomCode) {
 
     if (!state.isActive) {
       if (state.activeMicClientId && state.activeMicClientId !== state.clientId) {
-        setInterimMessage(
-          `${state.activeMicName || 'Karşı taraf'} konuşuyor... Mikrofonu kapattığında sıranız açılacak.`,
-          false
-        );
+        setInterimKey('online.partnerSpeaking', { name: state.activeMicName || t('online.otherSide') });
       } else if (partner && state.phase === 'idle') {
-        setInterimMessage("Sıra sizde. Konuşmak için Başlat'a basın.", false);
+        setInterimKey('online.yourTurn');
       }
     }
   });
@@ -956,14 +1011,14 @@ function connectToRoom(roomCode) {
   });
 
   es.onerror = () => {
-    els.partnerPresenceText.textContent = 'Bağlantı yenileniyor...';
+    setPresenceKey('online.reconnecting');
   };
 }
 
 async function createOnlineRoom() {
   const name = els.onlineNameInput.value.trim();
   if (!name) {
-    showAlert('Lütfen önce adınızı girin.');
+    showAlert(t('err.needName'));
     els.onlineNameInput.focus();
     return;
   }
@@ -981,7 +1036,7 @@ async function createOnlineRoom() {
     connectToRoom(data.roomCode);
     updateLanguageBadges();
   } catch (err) {
-    showAlert(`Oda oluşturulamadı: ${err.message}`);
+    showAlert(t('err.roomCreate', { err: err.message }));
   }
 }
 
@@ -989,12 +1044,12 @@ function joinOnlineRoom() {
   const name = els.onlineNameInput.value.trim();
   const code = els.onlineRoomInput.value.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
   if (!name) {
-    showAlert('Lütfen adınızı girin.');
+    showAlert(t('err.needName'));
     els.onlineNameInput.focus();
     return;
   }
   if (!code || code.length < 4) {
-    showAlert('Lütfen geçerli bir oda kodu girin.');
+    showAlert(t('err.badRoom'));
     els.onlineRoomInput.focus();
     return;
   }
@@ -1026,7 +1081,7 @@ function exportTranscript() {
   if (!state.messages.length) return;
   const lines = state.messages.map(
     (m) =>
-      `[${m.time}] ${m.speaker === 'me' ? 'BEN' : 'KARŞIDAKİ'} (${findLanguage(m.sourceLang).short} -> ${findLanguage(m.targetLang).short})\nOrjinal: ${m.originalText}\nÇeviri: ${m.translatedText}\n`
+      `[${m.time}] ${m.senderName || (m.speaker === 'me' ? t('who.meUpper') : t('who.partnerUpper'))} (${findLanguage(m.sourceLang).short} -> ${findLanguage(m.targetLang).short})\n${t('export.original')}: ${m.originalText}\n${t('export.translation')}: ${m.translatedText}\n`
   );
   const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -1079,8 +1134,8 @@ function bindEvents() {
     if (!els.inviteLinkInput.value) return;
     try {
       await navigator.clipboard.writeText(els.inviteLinkInput.value);
-      els.copyInviteBtn.textContent = '✓ Kopyalandı';
-      setTimeout(() => (els.copyInviteBtn.textContent = 'Davet Linkini Kopyala'), 1600);
+      els.copyInviteBtn.textContent = t('msg.copied');
+      setTimeout(() => (els.copyInviteBtn.textContent = t('online.copyInvite')), 1600);
     } catch {
       els.inviteLinkInput.select();
     }
@@ -1133,7 +1188,7 @@ function bindEvents() {
     state.messages = [];
     els.chatStream.querySelectorAll('.msg-card').forEach((n) => n.remove());
     els.emptyState.classList.remove('hidden');
-    els.messageCount.textContent = '0 mesaj';
+    els.messageCount.textContent = t('stream.count', { n: 0 });
   });
 
   els.exportBtn.addEventListener('click', exportTranscript);
@@ -1162,7 +1217,7 @@ function bindEvents() {
         'Telefondan bağlanmak ve uygulama olarak yüklemek için <strong>CEVIRI-Baslat-online.bat</strong> ile açın; oluşan HTTPS adresinin QR kodu telefonunuzda doğrudan açılır.';
     } else {
       els.qrHintText.innerHTML =
-        'Telefon kameranızla okutun, açılan sayfada tarayıcı menüsünden <strong>Ana Ekrana Ekle / Uygulamayı Yükle</strong> seçeneğine dokunun.';
+        t('qr.hint');
     }
 
     els.qrModal.classList.remove('hidden');
@@ -1182,8 +1237,8 @@ function bindEvents() {
     if (!els.qrUrlInput.value) return;
     try {
       await navigator.clipboard.writeText(els.qrUrlInput.value);
-      els.copyQrUrlBtn.textContent = '✓ Kopyalandı';
-      setTimeout(() => (els.copyQrUrlBtn.textContent = 'Kopyala'), 1500);
+      els.copyQrUrlBtn.textContent = t('msg.copied');
+      setTimeout(() => (els.copyQrUrlBtn.textContent = t('copy')), 1500);
     } catch {
       els.qrUrlInput.select();
     }
@@ -1249,7 +1304,61 @@ function bindEvents() {
   });
 }
 
+// Arayuz dili secimi (ust bardaki 🌐 ve Ayarlar)
+function populateUiLangSelect() {
+  const sel = document.getElementById('uiLangSelect');
+  if (!sel) return;
+  sel.innerHTML = '';
+  for (const l of UI_LANGS) {
+    const opt = document.createElement('option');
+    opt.value = l.code;
+    opt.textContent = l.name;
+    opt.dir = 'auto';
+    if (l.code === getUiLang()) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  const code = document.getElementById('uiLangBtnCode');
+  if (code) code.textContent = getUiLang().split('-')[0].toUpperCase();
+}
+
+function rerenderForUiLang() {
+  populateUiLangSelect();
+  populateLanguageSelects();
+  setPhase(state.phase);
+  updateTurnUI();
+  els.messageCount.textContent = t('stream.count', { n: state.messages.length });
+  els.chatStream.querySelectorAll('.replay-btn').forEach((b) => (b.textContent = t('msg.replay')));
+  els.chatStream.querySelectorAll('.copy-btn').forEach((b) => (b.textContent = t('msg.copy')));
+  renderSlot('interim');
+  renderSlot('badge');
+  renderSlot('presence');
+  // Henuz konusulmamis yuz yuze kartlari yeni dilde goster
+  [els.faceMeText, els.facePartnerText].forEach((el) => {
+    if (!state.isActive && el.dataset.untouched !== 'false') el.textContent = t('face.tap');
+  });
+}
+
+function bindUiLang() {
+  initI18n();
+  populateUiLangSelect();
+  setInterimKey('hint.start', null, true);
+  els.faceMeText.textContent = t('face.tap');
+  els.facePartnerText.textContent = t('face.tap');
+  els.messageCount.textContent = t('stream.count', { n: 0 });
+  const sel = document.getElementById('uiLangSelect');
+  if (sel) sel.addEventListener('change', (e) => setUiLang(e.target.value));
+  const btn = document.getElementById('uiLangBtn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      els.settingsModal.classList.remove('hidden');
+      setTimeout(() => sel && sel.focus(), 50);
+    });
+  }
+  onUiLangChange(rerenderForUiLang);
+}
+
 function init() {
+  bindUiLang();
   populateLanguageSelects();
   updateTurnUI();
   drawIdleOrb();
@@ -1281,7 +1390,7 @@ function init() {
 
   if (!SpeechRecognitionAPI) {
     showAlert(
-      'Bilgi: Canlı ses tanıma için Google Chrome veya Microsoft Edge önerilir. Bu tarayıcıda alttaki metin kutusundan anlık sesli çeviri yapabilirsiniz.'
+      t('err.noSRInfo')
     );
   }
 }

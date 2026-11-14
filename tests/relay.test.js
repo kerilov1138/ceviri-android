@@ -29,7 +29,7 @@ function makeDevice(name, brokers) {
 function openRoom(dev, code, clientId, name, lang) {
   const events = [];
   const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}`);
-  for (const t of ['room_state', 'history', 'chat_message']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
+  for (const t of ['room_state', 'history', 'chat_message', 'file_message', 'file_progress', 'file_ready', 'file_failed']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
 const post = async (dev, path, body) => { const r = await dev.fetch(path, { method: 'POST', body: JSON.stringify(body) }); return { status: r.status, data: await r.json() }; };
@@ -93,6 +93,47 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   await sleep(400); assert.equal(ra.last('room_state').data.activeMicClientId, 'bbb');
   await post(B, `/api/rooms/${roomCode}/mic`, { clientId: 'bbb', active: false }); await sleep(300);
   console.log('ok mic lock');
+
+  // Dosya paylasimi: A -> B (PDF, ~300 KB, 7 parca), parca kaybi ve gec katilan
+  {
+    const size = 300 * 1024;
+    const bytes = new Uint8Array(size); for (let i = 0; i < size; i++) bytes[i] = (i * 31 + 7) & 255;
+    // B ilk seferde 2. parcayi kaybetsin -> eksik parca istenmeli
+    const roomB = B.CeviriRelay._rooms[roomCode];
+    const origRecv = roomB.receiveChunk.bind(roomB); let dropped = false;
+    roomB.receiveChunk = (msg) => { if (!dropped && msg.index === 2) { dropped = true; return; } origRecv(msg); };
+    const prog = [];
+    const meta = await A.CeviriRelay.sendFile(roomCode, 'rapor.pdf', 'application/pdf', bytes, (p) => prog.push(p));
+    assert.equal(meta.chunks, Math.ceil(size / (48 * 1024)));
+    assert.equal(prog[prog.length - 1], 1);
+    const t0 = Date.now();
+    while (!rb.events.some(e => e.type === 'file_ready' && e.data.id === meta.id) && Date.now() - t0 < 12000) await sleep(100);
+    assert.ok(dropped, 'parca dusuruldu');
+    assert.ok(rb.events.some(e => e.type === 'file_message' && e.data.id === meta.id && e.data.name === 'rapor.pdf'), 'B dosya mesajini aldi');
+    assert.ok(rb.events.some(e => e.type === 'file_ready' && e.data.id === meta.id), 'B dosyayi tamamladi (eksik parca yeniden istendi)');
+    const blob = await B.CeviriRelay.getFile(roomCode, meta.id);
+    const got = new Uint8Array(await blob.arrayBuffer());
+    assert.equal(got.length, size); assert.ok(got.every((v, i) => v === bytes[i]), 'icerik ayni');
+    assert.equal(blob.type, 'application/pdf');
+    // Gondericinin kendi kartı
+    assert.ok(ra.events.some(e => e.type === 'file_message' && e.data.id === meta.id && e.data.mine));
+    // Yasak tur reddedilir
+    await assert.rejects(A.CeviriRelay.sendFile(roomCode, 'x.exe', 'application/x-msdownload', new Uint8Array(10)));
+    roomB.receiveChunk = origRecv;
+    console.log('ok file transfer (+ lost chunk recovered in', Date.now() - t0, 'ms)');
+
+    // Gec katilan D: gecmisten dosyayi gorur, dokununca (getFile) indirir
+    const D = makeDevice('D', brokers); await D.fetch('/api/online-info'); await sleep(400);
+    const rd = openRoom(D, roomCode, 'ddd', 'Deniz', 'tr-TR');
+    const t1 = Date.now();
+    while (!rd.events.some(e => e.type === 'file_message' && e.data.id === meta.id) && Date.now() - t1 < 5000) await sleep(100);
+    const dm = rd.events.find(e => e.type === 'file_message' && e.data.id === meta.id);
+    assert.ok(dm, 'gec katilan dosyayi gecmisten gordu'); assert.equal(dm.data.state, 'available');
+    const blobD = await D.CeviriRelay.getFile(roomCode, meta.id);
+    assert.equal(blobD.size, size);
+    console.log('ok late joiner downloads file on tap');
+    rd.es.close(); await sleep(300);
+  }
 
   // One broker dies -> still works
   b1.close(); await sleep(500);

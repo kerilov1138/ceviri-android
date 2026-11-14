@@ -1,5 +1,4 @@
 import { LANGUAGES, findLanguage } from './languages.js';
-import { drawQrCode } from './qr.js';
 import { initI18n, t, langName, setUiLang, getUiLang, onUiLangChange, UI_LANGS } from './i18n.js';
 import { censor, stripMaskForSpeech } from './profanity.js';
 import { initCamera } from './camera.js';
@@ -141,15 +140,10 @@ const els = {
   textTranslateForm: document.getElementById('textTranslateForm'),
   textSpeakerSelect: document.getElementById('textSpeakerSelect'),
   textInput: document.getElementById('textInput'),
+  attachBtn: document.getElementById('attachBtn'),
+  attachInput: document.getElementById('attachInput'),
   exportBtn: document.getElementById('exportBtn'),
   clearBtn: document.getElementById('clearBtn'),
-  qrBtn: document.getElementById('qrBtn'),
-  qrModal: document.getElementById('qrModal'),
-  closeQrBtn: document.getElementById('closeQrBtn'),
-  qrCanvas: document.getElementById('qrCanvas'),
-  qrUrlInput: document.getElementById('qrUrlInput'),
-  qrHintText: document.getElementById('qrHintText'),
-  copyQrUrlBtn: document.getElementById('copyQrUrlBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   settingsModal: document.getElementById('settingsModal'),
   closeSettingsBtn: document.getElementById('closeSettingsBtn'),
@@ -887,6 +881,7 @@ function setMode(mode) {
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
   els.turnControls.classList.toggle('hidden', mode === 'online');
   els.textSpeakerSelect.classList.toggle('hidden', mode === 'online');
+  updateAttachVisibility();
   els.partnerLangSelect.disabled = mode === 'online' && Boolean(state.partnerName);
   els.swapLangsBtn.classList.toggle('hidden', mode === 'online');
   els.clearBtn.disabled = mode === 'online';
@@ -963,6 +958,8 @@ function connectToRoom(roomCode) {
   els.onlineActiveView.classList.remove('hidden');
   updateInviteLink();
 
+  updateAttachVisibility();
+
   const params = new URLSearchParams({
     clientId: state.clientId,
     name: state.myName || t('who.me'),
@@ -1011,6 +1008,11 @@ function connectToRoom(roomCode) {
       appendMessage({ ...msg, speaker });
     }
   });
+
+  es.addEventListener('file_message', (event) => onFileMessage(JSON.parse(event.data), roomCode));
+  es.addEventListener('file_progress', (event) => onFileProgress(JSON.parse(event.data)));
+  es.addEventListener('file_ready', (event) => onFileReady(JSON.parse(event.data)));
+  es.addEventListener('file_failed', (event) => onFileFailed(JSON.parse(event.data)));
 
   es.addEventListener('chat_message', async (event) => {
     const msg = JSON.parse(event.data);
@@ -1084,6 +1086,266 @@ function joinOnlineRoom() {
   updateLanguageBadges();
 }
 
+// ---------------------------------------------------------------------------
+// Online odada fotograf / PDF paylasimi
+// ---------------------------------------------------------------------------
+const FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const FILE_MAX_MB = 10;
+const IMAGE_SHRINK_OVER = 2 * 1024 * 1024; // 2 MB ustu fotograflar kucultulur
+const IMAGE_MAX_SIDE = 2560;
+const fileCards = new Map(); // dosya id -> { meta, roomCode, el, state, p, thumbDone }
+
+function updateAttachVisibility() {
+  if (!els.attachBtn) return;
+  els.attachBtn.classList.toggle('hidden', !(state.mode === 'online' && state.roomCode && window.CeviriRelay));
+}
+
+function fileTypeOf(file) {
+  const type = String(file.type || '').toLowerCase();
+  if (FILE_TYPES.includes(type)) return type;
+  const ext = String(file.name || '').split('.').pop().toLowerCase();
+  return { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', pdf: 'application/pdf' }[ext] || '';
+}
+
+function formatSize(n) {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function prepareFile(file, type) {
+  if (type.startsWith('image/') && file.size > IMAGE_SHRINK_OVER) {
+    try {
+      const url = URL.createObjectURL(file);
+      const img = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = url;
+      });
+      const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+      if (blob && blob.size < file.size) {
+        const base = String(file.name || 'foto').replace(/\.[^.]+$/, '');
+        return { bytes: new Uint8Array(await blob.arrayBuffer()), type: 'image/jpeg', name: `${base}.jpg` };
+      }
+    } catch {
+      // kucultme olmazsa asli gonderilir
+    }
+  }
+  return { bytes: new Uint8Array(await file.arrayBuffer()), type, name: file.name || (type === 'application/pdf' ? 'belge.pdf' : 'foto.jpg') };
+}
+
+async function handleAttach(file) {
+  if (!file) return;
+  if (state.mode !== 'online' || !state.roomCode || !window.CeviriRelay) {
+    showAlert(t('err.needRoom'));
+    return;
+  }
+  const type = fileTypeOf(file);
+  if (!type) {
+    showAlert(t('file.badType'));
+    return;
+  }
+  els.attachBtn.classList.add('busy');
+  try {
+    const prepared = await prepareFile(file, type);
+    if (prepared.bytes.length > FILE_MAX_MB * 1024 * 1024) {
+      showAlert(t('file.tooBig', { mb: FILE_MAX_MB }));
+      return;
+    }
+    await window.CeviriRelay.sendFile(state.roomCode, prepared.name, prepared.type, prepared.bytes);
+  } catch (err) {
+    showAlert(t('file.sendFailed', { err: (err && err.message) || String(err) }));
+  } finally {
+    els.attachBtn.classList.remove('busy');
+  }
+}
+
+function renderFileCard(entry) {
+  const stateEl = entry.el.querySelector('.file-state');
+  const labels = {
+    sending: t('file.sending', { p: entry.p || 0 }),
+    receiving: t('file.receiving', { p: entry.p || 0 }),
+    ready: t('file.tapToSave'),
+    available: t('file.tapToDownload'),
+    failed: t('file.unavailable'),
+  };
+  stateEl.textContent = labels[entry.state] || '';
+  entry.el.classList.toggle('failed', entry.state === 'failed');
+}
+
+async function loadFileThumb(entry) {
+  if (entry.thumbDone || !entry.meta.type.startsWith('image/')) return;
+  entry.thumbDone = true;
+  try {
+    const blob = await window.CeviriRelay.getFile(entry.roomCode, entry.meta.id);
+    const img = document.createElement('img');
+    img.className = 'file-thumb';
+    img.alt = '';
+    img.src = URL.createObjectURL(blob);
+    entry.el.querySelector('.file-thumb').replaceWith(img);
+  } catch {
+    entry.thumbDone = false;
+  }
+}
+
+function onFileMessage(meta, roomCode) {
+  const existing = fileCards.get(meta.id);
+  if (existing) {
+    if (meta.state === 'ready' && existing.state !== 'ready') onFileReady({ id: meta.id });
+    return;
+  }
+  const speaker = meta.senderId === state.clientId ? 'me' : 'partner';
+  const name = censor(meta.name, speaker === 'me' ? state.myLang : state.partnerLang);
+  const time = new Date(meta.timestamp || Date.now()).toLocaleTimeString(getUiLang(), { hour: '2-digit', minute: '2-digit' });
+  const who = censor(meta.senderName || '', state.myLang) || (speaker === 'me' ? t('who.meUpper') : t('who.partnerUpper'));
+
+  els.emptyState.classList.add('hidden');
+  const card = document.createElement('article');
+  card.className = `msg-card file-card ${speaker}`;
+  card.dataset.fileId = meta.id;
+  card.innerHTML = `
+    <div class="msg-top">
+      <span class="msg-speaker"></span>
+      <span class="msg-time"></span>
+    </div>
+    <button class="file-body" type="button">
+      <span class="file-thumb" aria-hidden="true"></span>
+      <span class="file-info">
+        <span class="file-name" dir="auto"></span>
+        <span class="file-meta"></span>
+        <span class="file-state"></span>
+      </span>
+    </button>
+  `;
+  card.querySelector('.msg-speaker').textContent = `📎 ${who.toLocaleUpperCase()}`;
+  card.querySelector('.msg-time').textContent = time;
+  card.querySelector('.file-thumb').textContent = meta.type === 'application/pdf' ? '📄' : '🖼️';
+  card.querySelector('.file-name').textContent = name;
+  card.querySelector('.file-meta').textContent = `${meta.type === 'application/pdf' ? 'PDF' : meta.type.split('/')[1].toUpperCase()} · ${formatSize(meta.size)}`;
+
+  const entry = { meta: { ...meta, name }, roomCode, el: card, state: meta.state || 'available', p: 0, thumbDone: false };
+  fileCards.set(meta.id, entry);
+  card.querySelector('.file-body').addEventListener('click', () => saveRoomFile(entry));
+  renderFileCard(entry);
+
+  state.messages.push({
+    id: meta.id,
+    speaker,
+    senderName: who,
+    sourceLang: state.myLang,
+    targetLang: state.myLang,
+    originalText: `📎 ${name}`,
+    translatedText: '',
+    time,
+  });
+  els.messageCount.textContent = t('stream.count', { n: state.messages.length });
+  els.chatStream.appendChild(card);
+  els.chatStream.scrollTop = els.chatStream.scrollHeight;
+  if (entry.state === 'ready') loadFileThumb(entry);
+}
+
+function onFileProgress({ id, received, total, sending }) {
+  const entry = fileCards.get(id);
+  if (!entry || entry.state === 'ready') return;
+  entry.state = sending ? 'sending' : 'receiving';
+  entry.p = total ? Math.round((received / total) * 100) : 0;
+  renderFileCard(entry);
+}
+
+function onFileReady({ id }) {
+  const entry = fileCards.get(id);
+  if (!entry) return;
+  entry.state = 'ready';
+  renderFileCard(entry);
+  loadFileThumb(entry);
+}
+
+function onFileFailed({ id }) {
+  const entry = fileCards.get(id);
+  if (!entry || entry.state === 'ready') return;
+  entry.state = 'failed';
+  renderFileCard(entry);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(reader.error || new Error('read'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function saveBlob(blob, name, type) {
+  if (IS_NATIVE_APP) {
+    // Uygulama: Belgeler/CEVIRI klasorune kaydet ve ac
+    const reg = (window.capacitorExports && window.capacitorExports.registerPlugin) || window.Capacitor.registerPlugin;
+    const Filesystem = reg('Filesystem');
+    const FileOpener = reg('FileOpener');
+    const data = await blobToBase64(blob);
+    const path = `CEVIRI/${name}`;
+    let uri;
+    try {
+      uri = (await Filesystem.writeFile({ path, data, directory: 'DOCUMENTS', recursive: true })).uri;
+      showAlert(t('file.saved', { path: `Documents/${path}` }));
+    } catch {
+      // Eski Android / izin yok: gecici klasore yaz, yine de ac
+      uri = (await Filesystem.writeFile({ path, data, directory: 'CACHE', recursive: true })).uri;
+    }
+    try {
+      await FileOpener.open({ filePath: uri, contentType: type, openWithDefault: true });
+    } catch {
+      // Acacak uygulama yoksa dosya yine de kaydedildi
+    }
+    return;
+  }
+  // Tarayici: dosyayi indir
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function saveRoomFile(entry) {
+  if (entry.saving || !window.CeviriRelay) return;
+  entry.saving = true;
+  try {
+    if (entry.state !== 'ready' && entry.state !== 'sending') {
+      entry.state = 'receiving';
+      renderFileCard(entry);
+    }
+    const blob = await window.CeviriRelay.getFile(entry.roomCode, entry.meta.id);
+    entry.state = 'ready';
+    renderFileCard(entry);
+    loadFileThumb(entry);
+    await saveBlob(blob, entry.meta.name, entry.meta.type);
+  } catch (err) {
+    if (err && err.message === 'unavailable') {
+      entry.state = 'failed';
+      renderFileCard(entry);
+      showAlert(t('file.unavailable'));
+    } else {
+      showAlert(t('file.saveFailed', { err: (err && err.message) || String(err) }));
+    }
+  } finally {
+    entry.saving = false;
+  }
+}
+
 function leaveOnlineRoom() {
   if (state.isActive) stopLiveSession();
   if (state.eventSource) {
@@ -1097,6 +1359,7 @@ function leaveOnlineRoom() {
   els.partnerLangSelect.disabled = false;
   els.onlineActiveView.classList.add('hidden');
   els.onlineJoinView.classList.remove('hidden');
+  updateAttachVisibility();
   updateLanguageBadges();
   updateTurnUI();
 }
@@ -1196,6 +1459,12 @@ function bindEvents() {
     }
   });
 
+  els.attachInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    handleAttach(file);
+  });
+
   els.textTranslateForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = els.textInput.value.trim();
@@ -1218,56 +1487,6 @@ function bindEvents() {
 
   els.exportBtn.addEventListener('click', exportTranscript);
   els.alertCloseBtn.addEventListener('click', hideAlert);
-
-  // QR modal
-  els.qrBtn.addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/online-info');
-      if (res.ok) state.onlineInfo = await res.json();
-    } catch {
-      // Fallback to current origin
-    }
-
-    const baseUrl = state.onlineInfo.publicUrl || window.location.origin;
-    const targetUrl =
-      state.mode === 'online' && state.roomCode
-        ? `${baseUrl}/?room=${encodeURIComponent(state.roomCode)}`
-        : `${baseUrl.replace(/\/+$/, '')}/`;
-
-    els.qrUrlInput.value = targetUrl;
-    drawQrCode(els.qrCanvas, targetUrl, 240);
-
-    if (targetUrl.startsWith('http://localhost') || targetUrl.startsWith('http://127.0.0.1')) {
-      els.qrHintText.innerHTML =
-        'Telefondan bağlanmak ve uygulama olarak yüklemek için <strong>CEVIRI-Baslat-online.bat</strong> ile açın; oluşan HTTPS adresinin QR kodu telefonunuzda doğrudan açılır.';
-    } else {
-      els.qrHintText.innerHTML =
-        t('qr.hint');
-    }
-
-    els.qrModal.classList.remove('hidden');
-  });
-
-  els.closeQrBtn.addEventListener('click', () => {
-    els.qrModal.classList.add('hidden');
-  });
-
-  els.qrModal.addEventListener('click', (e) => {
-    if (e.target === els.qrModal) {
-      els.qrModal.classList.add('hidden');
-    }
-  });
-
-  els.copyQrUrlBtn.addEventListener('click', async () => {
-    if (!els.qrUrlInput.value) return;
-    try {
-      await navigator.clipboard.writeText(els.qrUrlInput.value);
-      els.copyQrUrlBtn.textContent = t('msg.copied');
-      setTimeout(() => (els.copyQrUrlBtn.textContent = t('copy')), 1500);
-    } catch {
-      els.qrUrlInput.select();
-    }
-  });
 
   // Settings modal
   els.settingsBtn.addEventListener('click', () => {
@@ -1357,6 +1576,7 @@ function rerenderForUiLang() {
   renderSlot('interim');
   renderSlot('badge');
   renderSlot('presence');
+  fileCards.forEach((entry) => renderFileCard(entry));
   // Henuz konusulmamis yuz yuze kartlari yeni dilde goster
   [els.faceMeText, els.facePartnerText].forEach((el) => {
     if (!state.isActive && el.dataset.untouched !== 'false') el.textContent = t('face.tap');

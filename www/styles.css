@@ -1175,3 +1175,83 @@ html[dir='rtl'] #roomCodeBadge {
     font-size: 0.78rem;
   }
 }
+
+/* Online odada fotograf / PDF paylasimi */
+.attach-btn {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.attach-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.attach-btn.busy {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.file-body {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 10px;
+  cursor: pointer;
+  text-align: start;
+  color: var(--text);
+  font: inherit;
+  width: 100%;
+}
+.file-body:hover {
+  border-color: var(--border-strong);
+}
+.file-thumb {
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+}
+img.file-thumb {
+  display: block;
+}
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.file-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-meta {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+.file-state {
+  color: var(--me);
+  font-size: 0.82rem;
+}
+.file-card.failed .file-state {
+  color: var(--danger);
+}

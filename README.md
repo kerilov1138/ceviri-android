@@ -48,7 +48,7 @@ GitHub Actions her push'ta uygulamanın web sürümünü ücretsiz olarak
 
 - APK'da Online → "Yeni Oda Oluştur" deyince davet kutusunda bu adrese giden
   bir link çıkar (ör. `.../ceviri-android/?room=AB12CD34`). "Davet Linkini
-  Kopyala" ile WhatsApp vb. üzerinden gönder; QR düğmesi aynı linkin QR kodunu gösterir.
+  Kopyala" ile WhatsApp vb. üzerinden gönder.
 - Linki açan kişi uygulama kurmadan tarayıcıdan katılır: iPhone'da **Safari**,
   Android/bilgisayarda **Chrome** veya **Edge**. Adını yazıp "Odaya Katıl"a basması yeterli.
 - Odalar yine şifrelidir; link oda kodunu içerdiği için yalnızca konuşacağın kişiye gönder.
@@ -85,11 +85,20 @@ gizlenir; çeviri sonucu, online odada gelen mesajlar ve seslendirme de ayrıca
 filtrelenir. Böylece konuşma tanıma bir küfrü yıldızlamasa bile karşıya gitmez.
 Listeler 32 dil için `www/profanity-data.js` dosyasındadır.
 
-## Davet linki / QR ile gelenler
+## Davet linki ile gelenler
 
-Web sitesini (davet linki veya QR) açan kişi yalnızca **Online Oda**'yı görür;
-Kamera, Canlı Döngü ve Yüz Yüze sekmeleri sadece uygulamada vardır. Uygulamadaki
-QR kodu her zaman web sitesini açar (odadaysan doğrudan o odayı).
+Web sitesini (davet linki) açan kişi yalnızca **Online Oda**'yı görür;
+Kamera, Canlı Döngü ve Yüz Yüze sekmeleri sadece uygulamada vardır.
+
+## Odada fotoğraf ve PDF paylaşımı
+
+Online odadayken mesaj kutusunun yanındaki **📎** düğmesiyle fotoğraf (JPEG, PNG,
+WebP) veya PDF gönderilir (en fazla 10 MB; 2 MB üstü fotoğraflar gönderilmeden
+küçültülür). Dosya, odanın şifreli bağlantısı üzerinden parça parça gider; kayıp
+parça olursa alıcı otomatik yeniden ister. Karşı taraf dosya kartına dokunarak
+kaydeder: uygulamada **Belgeler/CEVIRI** klasörüne kaydedilip açılır, tarayıcıda
+indirilir. Odaya sonradan katılan da dosyayı görür ve dokununca indirir (gönderen
+odadayken).
 
 ## Online oda modu (sunucusuz)
 
@@ -115,7 +124,7 @@ taklit eder; cihazlar herkese açık ücretsiz MQTT aracıları üzerinden bulu�
   aynı odaya girer.
 - Ses tanıma Android'in kendi servisini (Google) kullanır; konuşma bittiğinde
   metin bir kerede gelir.
-- QR kod ve sohbeti dosyaya indirme düğmeleri gizlendi.
+- Sohbeti dosyaya indirme düğmesi uygulamada gizlidir.
 - İnternet bağlantısı gerekir.
 
 ## İmza anahtarı (GitHub Secrets)

@@ -203,6 +203,10 @@
     this.activeMic = null; // {clientId, ts}
     this.sink = null; // FakeEventSource
     this.heartbeat = null;
+    this.outFiles = new Map(); // bu cihazin gonderdigi dosyalar: id -> { meta, bytes }
+    this.inFiles = new Map(); // gelen dosyalar: id -> { meta, parts, got, blob, ... }
+    this.fileMetas = []; // odadaki dosyalarin listesi (gec gelenlere gecmis olarak gider)
+    this.fileTimer = null;
     var self = this;
     this.ready = deriveRoomSecrets(code).then(function (s) {
       self.secrets = s;
@@ -249,8 +253,8 @@
       if (isNew || msg.type === 'hello') {
         // Yeni gelene kendimizi ve gecmisi hemen bildir
         this.sendPresence('presence');
-        if (this.messages.length) {
-          this.send({ type: 'history', messages: this.messages.slice(-HISTORY_LIMIT) });
+        if (this.messages.length || this.fileMetas.length) {
+          this.send({ type: 'history', messages: this.messages.slice(-HISTORY_LIMIT), files: this.fileMetas.slice(-FILE_HISTORY_LIMIT) });
         }
       }
       this.broadcastState();
@@ -276,6 +280,30 @@
       var m = sanitizeChat(msg.message, this.code);
       if (m) this.addMessage(m);
       return;
+    }
+
+    if (msg.type === 'file-meta' && msg.file) {
+      var fm = sanitizeFileMeta(msg.file);
+      if (fm && fm.senderId === msg.from) this.registerIncoming(fm, true);
+      return;
+    }
+
+    if (msg.type === 'file-chunk') {
+      this.receiveChunk(msg);
+      return;
+    }
+
+    if (msg.type === 'file-req') {
+      if (this.self && msg.to === this.self.clientId) this.resendChunks(String(msg.fileId || ''), msg.missing);
+      return;
+    }
+
+    if (msg.type === 'history' && Array.isArray(msg.files)) {
+      var selfRef = this;
+      msg.files.forEach(function (raw) {
+        var fm2 = sanitizeFileMeta(raw);
+        if (fm2) selfRef.registerIncoming(fm2, false);
+      });
     }
 
     if (msg.type === 'history' && Array.isArray(msg.messages)) {
@@ -373,8 +401,10 @@
     this.self = { clientId: clientId, name: name, lang: lang, joinedAt: Date.now(), lastSeen: Infinity };
     this.participants.set(clientId, this.self);
     sink._emit('history', { messages: this.messages.slice() });
+    this.fileMetas.forEach(function (meta) { sink._emit('file_message', self.fileStatus(meta)); });
     this.broadcastState();
     this.sendPresence('hello');
+    this.startFileWatchdog();
     clearInterval(this.heartbeat);
     this.heartbeat = setInterval(function () {
       self.sendPresence('presence');
@@ -393,6 +423,218 @@
     }
     this.sink = null;
     this.self = null;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Dosya paylasimi (fotograf ve PDF)
+  // Dosya ~48 KB'lik sifreli parcalar halinde gider; alici eksik parcalari
+  // gonderenden yeniden ister. Odaya sonradan gelen, dosyaya dokununca
+  // tum parcalari ister.
+  // ---------------------------------------------------------------------------
+  var FILE_CHUNK = 48 * 1024;
+  var FILE_MAX_BYTES = 10 * 1024 * 1024;
+  var FILE_HISTORY_LIMIT = 20;
+  var FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+  var FILE_RETRY_MS = 4000;
+  var FILE_MAX_TRIES = 6;
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  function cleanFileName(name, type) {
+    var base = String(name || '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^\.+/, '').trim().slice(0, 120);
+    if (!base) base = type === 'application/pdf' ? 'belge.pdf' : 'foto.jpg';
+    return base;
+  }
+
+  function sanitizeFileMeta(raw) {
+    if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') return null;
+    var type = String(raw.type || '');
+    if (FILE_TYPES.indexOf(type) < 0) return null;
+    var size = Number(raw.size);
+    if (!(size > 0) || size > FILE_MAX_BYTES) return null;
+    var chunks = Math.max(1, Math.ceil(size / FILE_CHUNK));
+    return {
+      id: raw.id.slice(0, 64),
+      senderId: String(raw.senderId || '').slice(0, 64),
+      senderName: String(raw.senderName || 'Kullanici').slice(0, 40),
+      name: cleanFileName(raw.name, type),
+      type: type,
+      size: size,
+      chunks: chunks,
+      timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+    };
+  }
+
+  RoomSession.prototype.rememberMeta = function (meta) {
+    if (this.fileMetas.some(function (m) { return m.id === meta.id; })) return;
+    this.fileMetas.push(meta);
+    if (this.fileMetas.length > FILE_HISTORY_LIMIT) this.fileMetas.shift();
+  };
+
+  RoomSession.prototype.fileStatus = function (meta) {
+    var out = this.outFiles.get(meta.id);
+    var inc = this.inFiles.get(meta.id);
+    var state = out || (inc && inc.blob) ? 'ready' : inc && inc.failed ? 'failed' : inc && inc.wanted ? 'receiving' : 'available';
+    return Object.assign({}, meta, {
+      state: state,
+      received: out ? meta.chunks : inc ? inc.got : 0,
+      mine: Boolean(out),
+    });
+  };
+
+  RoomSession.prototype.emitFile = function (event, data) {
+    if (this.sink) this.sink._emit(event, data);
+  };
+
+  RoomSession.prototype.sendChunk = function (id, index) {
+    var entry = this.outFiles.get(id);
+    if (!entry || index < 0 || index >= entry.meta.chunks) return Promise.resolve(0);
+    var part = entry.bytes.subarray(index * FILE_CHUNK, Math.min(entry.bytes.length, (index + 1) * FILE_CHUNK));
+    return this.send({ type: 'file-chunk', fileId: id, index: index, data: b64(part) });
+  };
+
+  RoomSession.prototype.sendFile = async function (name, type, bytes, onProgress) {
+    if (!this.self) throw new Error('not in room');
+    if (FILE_TYPES.indexOf(type) < 0) throw new Error('type');
+    if (!bytes || !bytes.length || bytes.length > FILE_MAX_BYTES) throw new Error('size');
+    if (transport.connectedCount() === 0) throw new Error('offline');
+    var meta = {
+      id: Date.now().toString(36) + '-' + randomId().slice(0, 8),
+      senderId: this.self.clientId,
+      senderName: this.self.name,
+      name: cleanFileName(name, type),
+      type: type,
+      size: bytes.length,
+      chunks: Math.max(1, Math.ceil(bytes.length / FILE_CHUNK)),
+      timestamp: Date.now(),
+    };
+    this.outFiles.set(meta.id, { meta: meta, bytes: bytes });
+    // Bellek: en fazla 20 dosya tut
+    if (this.outFiles.size > FILE_HISTORY_LIMIT) this.outFiles.delete(this.outFiles.keys().next().value);
+    this.rememberMeta(meta);
+    this.emitFile('file_message', Object.assign(this.fileStatus(meta), { state: 'sending', received: 0 }));
+    await this.send({ type: 'file-meta', file: meta });
+    for (var i = 0; i < meta.chunks; i++) {
+      await this.sendChunk(meta.id, i);
+      var p = (i + 1) / meta.chunks;
+      if (onProgress) onProgress(p);
+      this.emitFile('file_progress', { id: meta.id, received: i + 1, total: meta.chunks, sending: true });
+      if (i % 6 === 5) await sleep(25); // araciyi bogmamak icin kucuk ara
+    }
+    this.emitFile('file_ready', { id: meta.id });
+    return meta;
+  };
+
+  RoomSession.prototype.resendChunks = async function (id, missing) {
+    var entry = this.outFiles.get(id);
+    if (!entry) return;
+    var list = Array.isArray(missing) ? missing : [];
+    if (!list.length) for (var k = 0; k < entry.meta.chunks; k++) list.push(k);
+    list = list.slice(0, 400);
+    for (var i = 0; i < list.length; i++) {
+      var idx = Number(list[i]);
+      if (Number.isInteger(idx)) await this.sendChunk(id, idx);
+      if (i % 6 === 5) await sleep(25);
+    }
+  };
+
+  RoomSession.prototype.registerIncoming = function (meta, live) {
+    if (this.outFiles.has(meta.id)) return;
+    var entry = this.inFiles.get(meta.id);
+    if (!entry) {
+      entry = { meta: meta, parts: new Array(meta.chunks), got: 0, blob: null, failed: false, wanted: Boolean(live), tries: 0, lastAt: Date.now(), waiters: [], lastProgress: 0 };
+      this.inFiles.set(meta.id, entry);
+      if (this.inFiles.size > 40) this.inFiles.delete(this.inFiles.keys().next().value);
+      this.rememberMeta(meta);
+      this.emitFile('file_message', this.fileStatus(meta));
+    } else if (live && !entry.wanted) {
+      entry.wanted = true;
+      entry.lastAt = Date.now();
+    }
+    this.startFileWatchdog();
+  };
+
+  RoomSession.prototype.receiveChunk = function (msg) {
+    var entry = this.inFiles.get(String(msg.fileId || ''));
+    if (!entry || entry.blob) return;
+    var idx = Number(msg.index);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= entry.meta.chunks || entry.parts[idx]) return;
+    var bytes;
+    try { bytes = unb64(String(msg.data || '')); } catch (e) { return; }
+    entry.parts[idx] = bytes;
+    entry.got += 1;
+    entry.lastAt = Date.now();
+    entry.wanted = true;
+    if (entry.failed) entry.failed = false;
+    var now = Date.now();
+    if (entry.got === entry.meta.chunks) {
+      entry.blob = new Blob(entry.parts, { type: entry.meta.type });
+      entry.parts = null;
+      this.emitFile('file_ready', { id: entry.meta.id });
+      entry.waiters.forEach(function (w) { w.resolve(entry.blob); });
+      entry.waiters = [];
+    } else if (now - entry.lastProgress > 200) {
+      entry.lastProgress = now;
+      this.emitFile('file_progress', { id: entry.meta.id, received: entry.got, total: entry.meta.chunks });
+    }
+  };
+
+  RoomSession.prototype.requestMissing = function (entry) {
+    var missing = [];
+    for (var i = 0; i < entry.meta.chunks && missing.length < 400; i++) if (!entry.parts[i]) missing.push(i);
+    this.send({ type: 'file-req', fileId: entry.meta.id, to: entry.meta.senderId, missing: missing });
+  };
+
+  RoomSession.prototype.startFileWatchdog = function () {
+    if (this.fileTimer) return;
+    var self = this;
+    this.fileTimer = setInterval(function () {
+      var now = Date.now();
+      var pending = 0;
+      self.inFiles.forEach(function (entry) {
+        if (entry.blob || entry.failed || !entry.wanted) return;
+        pending++;
+        if (now - entry.lastAt < FILE_RETRY_MS) return;
+        if (entry.tries >= FILE_MAX_TRIES) {
+          entry.failed = true;
+          self.emitFile('file_failed', { id: entry.meta.id });
+          entry.waiters.forEach(function (w) { w.reject(new Error('unavailable')); });
+          entry.waiters = [];
+          return;
+        }
+        entry.tries += 1;
+        entry.lastAt = now;
+        self.requestMissing(entry);
+      });
+      if (!pending && !self.sink) {
+        clearInterval(self.fileTimer);
+        self.fileTimer = null;
+      }
+    }, 1000);
+  };
+
+  /** Dosyanin icerigini verir; henuz gelmediyse gonderenden ister. */
+  RoomSession.prototype.getFile = function (id) {
+    var out = this.outFiles.get(id);
+    if (out) return Promise.resolve(new Blob([out.bytes], { type: out.meta.type }));
+    var entry = this.inFiles.get(id);
+    if (!entry) return Promise.reject(new Error('unavailable'));
+    if (entry.blob) return Promise.resolve(entry.blob);
+    var self = this;
+    return new Promise(function (resolve, reject) {
+      entry.waiters.push({ resolve: resolve, reject: reject });
+      if (!entry.wanted || entry.failed) {
+        entry.wanted = true;
+        entry.failed = false;
+        entry.tries = 0;
+        entry.lastAt = Date.now();
+        self.emitFile('file_progress', { id: id, received: entry.got, total: entry.meta.chunks });
+        self.requestMissing(entry);
+      }
+      self.startFileWatchdog();
+    });
   };
 
   function censorText(text, lang) {
@@ -593,6 +835,20 @@
     },
     handleRoomApi: handleRoomApi,
     onlineInfo: onlineInfo,
+    /** Odaya fotograf/PDF gonderir. bytes: Uint8Array */
+    sendFile: function (code, name, type, bytes, onProgress) {
+      var room = rooms[sanitizeRoomCode(code)];
+      if (!room || !room.self) return Promise.reject(new Error('not in room'));
+      return room.sendFile(name, type, bytes, onProgress);
+    },
+    /** Odadaki bir dosyanin icerigini (Blob) verir; gerekirse gonderenden ister. */
+    getFile: function (code, id) {
+      var room = rooms[sanitizeRoomCode(code)];
+      if (!room) return Promise.reject(new Error('unavailable'));
+      return room.getFile(id);
+    },
+    FILE_MAX_BYTES: FILE_MAX_BYTES,
+    FILE_TYPES: FILE_TYPES,
     // testler icin
     _transport: transport,
     _rooms: rooms,

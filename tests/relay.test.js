@@ -47,13 +47,13 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   // A creates room
   const { data: { roomCode } } = await post(A, '/api/rooms', {});
   assert.match(roomCode, /^[A-Z0-9]{8}$/); console.log('ok room', roomCode);
-  const ra = openRoom(A, roomCode, 'aaa', 'Kerem', 'tr-TR');
+  const ra = openRoom(A, roomCode, 'aaa', 'Ali', 'tr-TR');
   await sleep(300);
   assert.deepEqual(ra.last('history').data.messages, []);
   assert.equal(ra.last('room_state').data.participants.length, 1);
 
   // A sends message before partner joins -> fallback target
-  let m0 = await post(A, `/api/rooms/${roomCode}/message`, { clientId: 'aaa', senderName: 'Kerem', text: 'ilk mesaj', sourceLang: 'tr-TR', fallbackTargetLang: 'en-US' });
+  let m0 = await post(A, `/api/rooms/${roomCode}/message`, { clientId: 'aaa', senderName: 'Ali', text: 'ilk mesaj', sourceLang: 'tr-TR', fallbackTargetLang: 'en-US' });
   assert.equal(m0.status, 200); assert.equal(m0.data.translatedText, '[en] ilk mesaj');
 
   // B joins
@@ -63,7 +63,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   const sa = ra.last('room_state').data, sb = rb.last('room_state').data;
   assert.equal(sa.participants.length, 2, 'A sees 2'); assert.equal(sb.participants.length, 2, 'B sees 2');
   assert.equal(sa.participants.find(p => p.clientId === 'bbb').lang, 'de-DE');
-  assert.equal(sb.participants.find(p => p.clientId === 'aaa').name, 'Kerem');
+  assert.equal(sb.participants.find(p => p.clientId === 'aaa').name, 'Ali');
   const hist = rb.events.filter(e => e.type === 'history').flatMap(e => e.data.messages);
   assert.ok(hist.some(m => m.originalText === 'ilk mesaj'), 'B got history');
   console.log('ok join + presence + history');
@@ -85,8 +85,8 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   // Mic lock
   let r1 = await post(A, `/api/rooms/${roomCode}/mic`, { clientId: 'aaa', active: true }); assert.equal(r1.status, 200);
   await sleep(400);
-  assert.equal(rb.last('room_state').data.activeMicClientId, 'aaa'); assert.equal(rb.last('room_state').data.activeMicName, 'Kerem');
-  let r2 = await post(B, `/api/rooms/${roomCode}/mic`, { clientId: 'bbb', active: true }); assert.equal(r2.status, 409); assert.equal(r2.data.activeMicName, 'Kerem');
+  assert.equal(rb.last('room_state').data.activeMicClientId, 'aaa'); assert.equal(rb.last('room_state').data.activeMicName, 'Ali');
+  let r2 = await post(B, `/api/rooms/${roomCode}/mic`, { clientId: 'bbb', active: true }); assert.equal(r2.status, 409); assert.equal(r2.data.activeMicName, 'Ali');
   await post(A, `/api/rooms/${roomCode}/mic`, { clientId: 'aaa', active: false }); await sleep(400);
   assert.equal(rb.last('room_state').data.activeMicClientId, null);
   r2 = await post(B, `/api/rooms/${roomCode}/mic`, { clientId: 'bbb', active: true }); assert.equal(r2.status, 200);
@@ -103,7 +103,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
 
   // Language change = reconnect (close + new EventSource), partner sees new lang
   ra.es.close();
-  const ra2 = openRoom(A, roomCode, 'aaa', 'Kerem', 'en-US'); await sleep(800);
+  const ra2 = openRoom(A, roomCode, 'aaa', 'Ali', 'en-US'); await sleep(800);
   const p = rb.last('room_state').data.participants.find(x => x.clientId === 'aaa');
   assert.ok(p, 'A back in room for B'); assert.equal(p.lang, 'en-US');
   console.log('ok reconnect with new language');

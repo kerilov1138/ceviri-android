@@ -59,16 +59,35 @@ jobs:
       - name: Web dosyalarini Android projesine kopyala (cap sync)
         run: npm run sync
 
+      # Imza anahtari GitHub Secrets'tan gelir (depoda yok):
+      #   CEVIRI_KEYSTORE_BASE64   - anahtar dosyasinin base64 hali
+      #   CEVIRI_KEYSTORE_PASSWORD - anahtar sifresi
+      - name: Imza anahtarini hazirla
+        env:
+          KEYSTORE_B64: ${{ secrets.CEVIRI_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::CEVIRI_KEYSTORE_BASE64 secret'i tanimli degil. README'deki 'Imza anahtari' bolumune bakin."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ceviri.keystore"
+          echo "CEVIRI_KEYSTORE_PATH=$RUNNER_TEMP/ceviri.keystore" >> "$GITHUB_ENV"
+
       - name: APK derle
         working-directory: android
+        env:
+          CEVIRI_KEYSTORE_PASSWORD: ${{ secrets.CEVIRI_KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: APK'yi yeniden adlandir
+      - name: APK'yi yeniden adlandir ve imzayi dogrula
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/debug/app-debug.apk out/CEVIRI.apk
+          cp android/app/build/outputs/apk/release/app-release.apk out/CEVIRI.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs out/CEVIRI.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
+          rm -f "$RUNNER_TEMP/ceviri.keystore"
           ls -la out
 
       - name: APK'yi Artifacts olarak yukle
@@ -87,6 +106,7 @@ jobs:
           body: |
             Android icin CEVIRI uygulamasi. Telefona CEVIRI.apk dosyasini indirip acin.
             (Ilk kurulumda "bilinmeyen kaynaklardan yukleme" izni istenir.)
+            v1.0.5 oncesi bir surum yukluyse: imza anahtari degistigi icin eski uygulamayi bir kez silip bu surumu kurun.
           files: out/CEVIRI.apk
 
   web:

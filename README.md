@@ -82,6 +82,23 @@ taklit eder; cihazlar herkese açık ücretsiz MQTT aracıları üzerinden bulu�
 - QR kod ve sohbeti dosyaya indirme düğmeleri gizlendi.
 - İnternet bağlantısı gerekir.
 
+## İmza anahtarı (GitHub Secrets)
+
+APK'lar gizli bir anahtarla imzalanır. Anahtar depoda **yoktur**, GitHub'ın
+gizli ayarlarında durur; böylece başkası "CEVIRI" adıyla sahte bir APK imzalayıp
+senin uygulamanın üzerine güncelleme gibi kuramaz.
+
+Depo → **Settings → Secrets and variables → Actions → New repository secret**:
+
+| Ad | Değer |
+|---|---|
+| `CEVIRI_KEYSTORE_BASE64` | anahtar dosyasının base64 hali |
+| `CEVIRI_KEYSTORE_PASSWORD` | anahtar şifresi |
+
+Bu iki secret yoksa derleme bilerek hata verir (rastgele bir anahtarla imzalanmış,
+güncellenemeyen APK çıkmasın diye). Anahtar dosyasının yedeğini güvenli bir yerde
+sakla: kaybolursa yeni APK'lar eskilerinin üzerine kurulamaz.
+
 ## Testler
 
 `npm test` ses tanıma/seslendirme katmanını ve online odayı (yerel bir test

@@ -949,7 +949,7 @@
   }
 
   // Sayfa/sekme kapanirken odadan ayrildigini hemen bildir (digerleri 25 sn beklemesin)
-  window.addEventListener('pagehide', function () {
+  if (typeof window.addEventListener === 'function') window.addEventListener('pagehide', function () {
     Object.keys(rooms).forEach(function (code) {
       var room = rooms[code];
       if (room && room.sink) room.leave(room.sink);

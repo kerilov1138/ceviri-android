@@ -222,18 +222,30 @@
     payload.mid = randomId();
     payload.from = this.self ? this.self.clientId : '';
     payload.ts = Date.now();
-    await this.ready;
     transport.isDuplicate(payload.mid); // kendi yankimizi yok say
-    var text = await seal(this.secrets.key, payload);
-    return transport.publish(this.secrets.topic, text);
+    // Gonderim sirasi korunur: sifreleme paralel olsa da yayin sirayla yapilir
+    var self = this;
+    var sealed = this.ready.then(function (sec) { return seal(sec.key, payload); });
+    var publish = (this.sendChain || Promise.resolve()).then(function () {
+      return sealed.then(function (text) { return transport.publish(self.secrets.topic, text); });
+    });
+    this.sendChain = publish.catch(function () {});
+    return publish;
   };
 
-  RoomSession.prototype.onRaw = async function (text) {
-    var msg;
-    try { msg = await open(this.secrets.key, text); } catch (e) { return; }
-    if (!msg || !msg.mid || transport.isDuplicate(msg.mid)) return;
-    if (!this.self || msg.from === this.self.clientId) return;
-    this.handle(msg);
+  // Mesajlar GELDIKLERI SIRAYLA islenir. Sifre cozme asenkron oldugu icin
+  // paralel cozulen mesajlar yer degistirebiliyordu (or. goruntu baglantisinda
+  // "aday" mesaji "teklif"ten once islenip kayboluyordu).
+  RoomSession.prototype.onRaw = function (text) {
+    var self = this;
+    var decrypted = open(this.secrets.key, text).catch(function () { return null; });
+    this.rawChain = (this.rawChain || Promise.resolve()).then(function () {
+      return decrypted.then(function (msg) {
+        if (!msg || !msg.mid || transport.isDuplicate(msg.mid)) return;
+        if (!self.self || msg.from === self.self.clientId) return;
+        self.handle(msg);
+      });
+    }).catch(function () {});
   };
 
   RoomSession.prototype.handle = function (msg) {

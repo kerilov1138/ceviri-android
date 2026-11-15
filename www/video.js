@@ -7,7 +7,11 @@
 // "Kibar esler" (perfect negotiation) yontemiyle iki taraf ayni anda teklif
 // yaparsa da karisiklik olmaz.
 
-const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+const ICE_SERVERS = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
+const MAX_ICE_RESTARTS = 2;
 const VIDEO_CONSTRAINTS = {
   video: {
     facingMode: 'user',
@@ -49,7 +53,17 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
 
   function createPeer(id) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const peer = { id, pc, polite: String(selfId) > String(id), makingOffer: false, ignoreOffer: false, sender: null };
+    const peer = {
+      id,
+      pc,
+      polite: String(selfId) > String(id),
+      makingOffer: false,
+      ignoreOffer: false,
+      sender: null,
+      queue: Promise.resolve(), // gelen sinyaller bu kisi icin SIRAYLA islenir
+      pendingCandidates: [], // teklif/cevap gelmeden ulasan adaylar bekletilir
+      restarts: 0,
+    };
     peers.set(id, peer);
 
     pc.onnegotiationneeded = async () => {
@@ -72,10 +86,61 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       track.addEventListener('ended', () => onRemoteStream(id, null));
     };
     pc.onconnectionstatechange = () => {
-      if (onPeerState) onPeerState(id, pc.connectionState);
+      const st = pc.connectionState;
+      if (st === 'connected') peer.restarts = 0;
+      // Baglanti koparsa ICE'i yeniden baslat (ag degisimi, kisa kopma)
+      if (st === 'failed' && peer.restarts < MAX_ICE_RESTARTS) {
+        peer.restarts += 1;
+        try {
+          pc.restartIce();
+        } catch {
+          // eski tarayici
+        }
+      }
+      if (onPeerState) onPeerState(id, st);
     };
     addLocalTrack(peer);
     return peer;
+  }
+
+  async function flushCandidates(peer) {
+    const list = peer.pendingCandidates.splice(0);
+    for (const c of list) {
+      try {
+        await peer.pc.addIceCandidate(c);
+      } catch {
+        // gecersiz aday: yoksay
+      }
+    }
+  }
+
+  async function processSignal(peer, data) {
+    const { pc } = peer;
+    if (pc.signalingState === 'closed') return;
+    if (data.description) {
+      const desc = data.description;
+      if (desc.type === 'answer' && pc.signalingState !== 'have-local-offer') return; // eski/yinelenen cevap
+      const offerCollision = desc.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+      peer.ignoreOffer = !peer.polite && offerCollision;
+      if (peer.ignoreOffer) return;
+      await pc.setRemoteDescription(desc);
+      await flushCandidates(peer);
+      if (desc.type === 'offer') {
+        await pc.setLocalDescription();
+        send(peer.id, { description: pc.localDescription.toJSON() });
+      }
+    } else if (data.candidate) {
+      if (!pc.remoteDescription) {
+        // Teklif/cevap henuz islenmedi: adayi beklet
+        peer.pendingCandidates.push(data.candidate);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(data.candidate);
+      } catch {
+        if (!peer.ignoreOffer) peer.pendingCandidates.push(data.candidate);
+      }
+    }
   }
 
   function closePeer(id) {
@@ -107,31 +172,12 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       for (const id of wanted) if (!peers.has(id)) createPeer(id);
     },
 
-    async handleSignal(from, data) {
-      if (destroyed || !data) return;
+    handleSignal(from, data) {
+      if (destroyed || !data) return Promise.resolve();
       const peer = peers.get(from) || createPeer(from);
-      const { pc } = peer;
-      try {
-        if (data.description) {
-          const offerCollision =
-            data.description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
-          peer.ignoreOffer = !peer.polite && offerCollision;
-          if (peer.ignoreOffer) return;
-          await pc.setRemoteDescription(data.description);
-          if (data.description.type === 'offer') {
-            await pc.setLocalDescription();
-            send(from, { description: pc.localDescription.toJSON() });
-          }
-        } else if (data.candidate) {
-          try {
-            await pc.addIceCandidate(data.candidate);
-          } catch (err) {
-            if (!peer.ignoreOffer) throw err;
-          }
-        }
-      } catch {
-        // bozuk/eski sinyal: yoksay
-      }
+      // Ayni kisiden gelen sinyaller sirayla: bir teklif islenirken gelen aday kaybolmasin
+      peer.queue = peer.queue.then(() => processSignal(peer, data)).catch(() => {});
+      return peer.queue;
     },
 
     async startCamera() {

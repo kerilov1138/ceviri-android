@@ -504,7 +504,9 @@ function startListening() {
 
   const recognition = new SpeechRecognitionAPI();
   recognition.lang = listenLang;
-  recognition.continuous = state.mode === 'online';
+  // Online odada da cumle sonu/duraksama beklenir: konusma bitince TEK mesaj gider
+  // (surekli modda kisa parcalar ayri ayri ve mobil Chrome'da tekrarli gidiyordu)
+  recognition.continuous = false;
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   state.recognition = recognition;
@@ -541,16 +543,21 @@ function startListening() {
     }
 
     if (state.mode === 'online') {
-      const chunk = newFinalChunk.trim();
-      if (chunk) {
-        state.pendingTranscript = interim.trim();
-        handleUtterance(chunk, 'me');
-      } else {
-        state.pendingTranscript = interim.trim();
+      // Tum sonuclari bastan birlestir: mobil Chrome her sonucu oncekileri de
+      // icerecek sekilde tekrar gonderebiliyor ("merhaba", "merhaba nasilsin"...)
+      let finals = '';
+      let interims = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const res = event.results[i];
+        const tx = String(res[0].transcript || '').trim();
+        if (!tx) continue;
+        if (res.isFinal) finals = mergeTranscript(finals, tx);
+        else interims = mergeTranscript(interims, tx);
       }
-      if (interim.trim()) {
-        setInterimMessage(censor(interim.trim(), listenLang), true);
-      }
+      finalTranscript = finals;
+      const full = mergeTranscript(finals, interims);
+      state.pendingTranscript = full;
+      if (full) setInterimMessage(censor(full, listenLang), true);
       return;
     }
 
@@ -634,6 +641,30 @@ function startListening() {
       state.resumeTimer = setTimeout(() => startListening(), 300);
     }
   }
+}
+
+/**
+ * Iki konusma tanima parcasini tekrarsiz birlestirir.
+ * "merhaba" + "merhaba nasilsin" -> "merhaba nasilsin";
+ * "bugun hava" + "hava cok guzel" -> "bugun hava cok guzel"
+ */
+function mergeTranscript(a, b) {
+  a = String(a || '').trim();
+  b = String(b || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+  const la = a.toLocaleLowerCase();
+  const lb = b.toLocaleLowerCase();
+  if (lb.startsWith(la)) return b;
+  if (la.endsWith(lb) || la.includes(lb)) return a;
+  const aw = a.split(/\s+/);
+  const bw = b.split(/\s+/);
+  for (let k = Math.min(aw.length, bw.length); k > 0; k--) {
+    const tail = aw.slice(-k).join(' ').toLocaleLowerCase();
+    const head = bw.slice(0, k).join(' ').toLocaleLowerCase();
+    if (tail === head) return [...aw, ...bw.slice(k)].join(' ');
+  }
+  return `${a} ${b}`;
 }
 
 async function handleUtterance(text, speaker) {
@@ -1568,11 +1599,13 @@ function renderParticipants() {
     video.classList.toggle('mirror', isMe);
     tile.querySelector('.p-avatar').classList.toggle('hidden', show);
 
-    // Kamerasi acik ama baglanti kurulamadi
-    const failed = !isMe && camOn && ['failed', 'disconnected'].includes(peerStates.get(p.clientId));
+    // Kamerasi acik: goruntu gelene kadar "Baglaniyor...", kurulamazsa uyari
+    const connState = peerStates.get(p.clientId);
+    const failed = !isMe && camOn && connState === 'failed';
+    const connecting = !isMe && camOn && !show && !failed;
     const note = tile.querySelector('.p-note');
-    note.classList.toggle('hidden', !failed);
-    note.textContent = failed ? t('video.noConn') : '';
+    note.classList.toggle('hidden', !failed && !connecting);
+    note.textContent = failed ? t('video.noConn') : connecting ? t('online.connecting') : '';
 
     if (isMe) {
       const btn = tile.querySelector('.p-cam-btn');

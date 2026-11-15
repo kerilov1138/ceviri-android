@@ -77,17 +77,17 @@
           <span class="online-pill-live"><span class="status-dot"></span> <span data-i18n="online.room">ODA:</span> <strong id="roomCodeBadge">------</strong></span>
           <span id="tunnelStatusBadge" class="tunnel-badge" data-i18n="online.connecting">Bağlanıyor...</span>
           <span id="partnerPresenceText" class="presence-text" data-i18n="online.waiting">Karşı taraf bekleniyor...</span>
+          <button id="leaveRoomBtn" type="button" class="online-btn secondary leave-btn" data-i18n="online.leave">Ayrıl</button>
         </div>
         <div class="online-share-group">
           <input id="inviteLinkInput" type="text" class="online-input mono invite-url" readonly aria-label="Davet Linki" data-i18n-attr="aria-label:online.inviteAria" />
           <button id="copyInviteBtn" type="button" class="online-btn primary" data-i18n="online.copyInvite">Davet Linkini Kopyala</button>
-          <button id="leaveRoomBtn" type="button" class="online-btn secondary" data-i18n="online.leave">Ayrıl</button>
+          <div id="roomTools" class="room-tools hidden">
+            <button id="lockRoomBtn" type="button" class="online-btn secondary room-tool-btn hidden"></button>
+            <span id="lockedBadge" class="locked-badge hidden"></span>
+            <button id="videoReceiveBtn" type="button" class="online-btn secondary room-tool-btn"></button>
+          </div>
         </div>
-      </div>
-      <div id="roomTools" class="room-tools hidden">
-        <button id="lockRoomBtn" type="button" class="online-btn secondary room-tool-btn hidden"></button>
-        <span id="lockedBadge" class="locked-badge hidden"></span>
-        <button id="videoReceiveBtn" type="button" class="online-btn secondary room-tool-btn"></button>
       </div>
       <div id="participantsGrid" class="participants-grid hidden" aria-label="Katılımcılar" data-i18n-attr="aria-label:online.participants"></div>
     </section>

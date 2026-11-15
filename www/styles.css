@@ -1433,3 +1433,499 @@ img.file-thumb {
   height: 72px;
   font-size: 2rem;
 }
+
+/* =====================================================================
+   Online odadayken tek ekran duzeni
+   Kameralar, konusma akisi, canli yazi ve mikrofon ayni ekranda;
+   sayfa kaymaz, yalnizca konusma akisi kendi icinde kayar.
+   ===================================================================== */
+body.in-room {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.in-room .app-shell {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  max-width: 1440px;
+  padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows:
+    auto auto auto
+    clamp(150px, 28dvh, 400px)
+    minmax(0, 1fr)
+    auto auto auto;
+  grid-template-areas:
+    'top'
+    'strip'
+    'lang'
+    'video'
+    'stream'
+    'caption'
+    'input'
+    'mic';
+}
+
+/* Kapsayicilar kutusunu birakir; icerikleri dogrudan yerlesir */
+body.in-room #onlineBar,
+body.in-room .main-grid,
+body.in-room #loopStage,
+body.in-room .stream-panel {
+  display: contents;
+}
+body.in-room .stream-header,
+body.in-room #visualizerCanvas {
+  display: none;
+}
+
+body.in-room .topbar { grid-area: top; }
+body.in-room #onlineActiveView { grid-area: strip; }
+body.in-room .lang-bar { grid-area: lang; }
+body.in-room #participantsGrid { grid-area: video; }
+body.in-room #chatStream { grid-area: stream; }
+body.in-room .interim-box { grid-area: caption; }
+body.in-room #textTranslateForm { grid-area: input; }
+body.in-room .stage-orb-wrap { grid-area: mic; }
+
+/* Uyarilar akisi itmez: ustte bildirim olarak gorunur */
+body.in-room .alert-banner {
+  position: fixed;
+  z-index: 50;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px));
+  background: #2a1214;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* --- Ust cubuk: telefonda iki sira (marka + araclar / modlar) --- */
+body.in-room .topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+}
+body.in-room .brand-badge {
+  display: none;
+}
+body.in-room .brand {
+  display: none;
+}
+body.in-room .topbar-actions {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+body.in-room .status-pill {
+  margin-inline-end: auto;
+  min-width: 0;
+}
+body.in-room .mode-switch {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  width: 100%;
+}
+body.in-room .mode-btn {
+  flex: 1 1 auto;
+  padding: 5px 6px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+html.guest-mode body.in-room .mode-switch {
+  display: none; /* linkle girende tek sekme var, yer kaplamasin */
+}
+body.in-room .topbar-actions {
+  gap: 6px;
+}
+
+/* --- Oda seridi: kod + kim var, altta tek sira dugmeler --- */
+body.in-room .online-active-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 8px;
+  gap: 8px;
+  min-width: 0;
+}
+body.in-room .online-room-meta {
+  flex-wrap: nowrap;
+  gap: 8px;
+  font-size: 0.8rem;
+  min-width: 0;
+}
+body.in-room .online-pill-live {
+  flex-shrink: 0;
+  padding: 3px 9px;
+}
+body.in-room .tunnel-badge {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 9px;
+}
+body.in-room .tunnel-badge[data-state='ready'] {
+  display: none; /* baglanti sorunsuzsa yer kaplamaz; sorun olursa gorunur */
+}
+body.in-room .presence-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.in-room .online-share-group {
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+body.in-room .invite-url {
+  display: none;
+}
+body.in-room .online-active-row .online-btn {
+  flex: 0 1 auto;
+  padding: 6px 10px;
+  font-size: 0.74rem;
+  border-radius: 999px;
+}
+body.in-room .room-tools {
+  display: contents; /* dugmeler tek tek sarar, grup halinde alt satira dusmez */
+}
+body.in-room .room-tools.hidden {
+  display: none !important;
+}
+body.in-room .locked-badge {
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+body.in-room .leave-btn {
+  margin-inline-start: auto;
+  flex-shrink: 0;
+  padding: 5px 12px !important;
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+/* --- Diller: tek sira, sade --- */
+body.in-room .lang-bar {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+body.in-room .lang-card {
+  padding: 6px 12px;
+  gap: 1px;
+  border-radius: 12px;
+  min-width: 0;
+}
+body.in-room .lang-label {
+  font-size: 0.62rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.in-room .lang-select {
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+}
+
+/* --- Kameralar: alani doldurur, kutu sayisi JS ile secilir --- */
+body.in-room .participants-grid {
+  margin: 0;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  gap: 6px;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--rows, 1), minmax(0, 1fr));
+}
+body.in-room .participants-grid[data-layout='speaker'] {
+  grid-template-rows: minmax(0, 2.4fr) minmax(0, 1fr);
+}
+body.in-room .p-tile,
+body.in-room .p-tile.speaking {
+  aspect-ratio: auto;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 12px;
+}
+body.in-room .participants-grid[data-layout='even'] .p-tile.speaking {
+  grid-column: auto;
+}
+body.in-room .participants-grid[data-layout='speaker'] .p-tile.speaking {
+  grid-column: 1 / -1;
+}
+body.in-room .participants-grid[data-layout='speaker'] .p-tile:not(.speaking) .p-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 1rem;
+}
+body.in-room .participants-grid[data-layout='speaker'] .p-tile:not(.speaking) .p-lang {
+  display: none;
+}
+
+/* --- Konusma akisi: kalan alani alir, kendi icinde kayar --- */
+body.in-room .chat-stream {
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  gap: 8px;
+  overscroll-behavior: contain;
+}
+body.in-room .msg-card {
+  padding: 9px 12px;
+  gap: 5px;
+  border-radius: 12px;
+}
+body.in-room .empty-state span {
+  font-size: 0.8rem;
+}
+
+/* --- Canli yazi: o an soylenen, mikrofonun hemen ustunde --- */
+body.in-room .interim-box {
+  min-height: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  justify-content: flex-start;
+  text-align: start;
+}
+body.in-room .interim-text {
+  font-size: 0.86rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+body.in-room .interim-text.live {
+  font-size: 0.95rem;
+}
+
+/* --- Yazma cubugu --- */
+body.in-room .text-input-bar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 6px;
+  gap: 6px;
+}
+body.in-room .text-input {
+  min-width: 0;
+}
+
+/* --- Mikrofon: genis, basparmakla kolay basilan dugme --- */
+body.in-room .stage-orb-wrap {
+  width: auto;
+  height: auto;
+  display: block;
+}
+body.in-room .orb-btn {
+  width: 100%;
+  height: 54px;
+  border-radius: 16px;
+  flex-direction: row;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--surface-2);
+}
+body.in-room .orb-btn:hover {
+  transform: none;
+}
+body.in-room .orb-icon svg {
+  width: 22px;
+  height: 22px;
+}
+body.in-room .orb-label {
+  font-size: 0.98rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.in-room .orb-btn[data-active='true'][data-speaker='me'] {
+  background: var(--me-soft);
+  box-shadow: 0 0 24px rgba(16, 185, 129, 0.22);
+}
+body.in-room .orb-btn[data-active='true'][data-speaker='partner'] {
+  background: var(--partner-soft);
+  box-shadow: 0 0 24px rgba(129, 140, 248, 0.22);
+}
+
+/* Kisa telefonlar: kameralara biraz daha az yer */
+@media (max-height: 700px) and (orientation: portrait) {
+  body.in-room .app-shell {
+    grid-template-rows: auto auto auto clamp(120px, 24dvh, 260px) minmax(0, 1fr) auto auto auto;
+    gap: 6px;
+    padding-top: max(6px, env(safe-area-inset-top));
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+  body.in-room .online-active-row {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  body.in-room .lang-card {
+    padding: 4px 10px;
+  }
+  body.in-room .interim-box {
+    padding: 6px 10px;
+  }
+  body.in-room .interim-text {
+    -webkit-line-clamp: 1;
+  }
+  body.in-room .orb-btn {
+    height: 48px;
+  }
+}
+
+/* Orta genislik (tablet dikey): marka + araclar ustte, modlar altta */
+@media (min-width: 700px) {
+  body.in-room .brand {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1;
+  }
+  body.in-room .topbar-actions {
+    grid-column: 2;
+  }
+  body.in-room .status-pill {
+    margin-inline-end: 0;
+  }
+  body.in-room .mode-switch {
+    width: auto;
+    justify-self: start;
+  }
+  body.in-room .mode-btn {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    font-size: 0.82rem;
+  }
+}
+
+/* Genis ekran ve yatay telefon: ust cubuk tek sira */
+@media (min-width: 1000px), (orientation: landscape) and (max-height: 520px) and (min-width: 600px) {
+  body.in-room .topbar {
+    display: flex;
+    flex-wrap: nowrap;
+  }
+  body.in-room .mode-switch {
+    margin-inline-start: auto;
+  }
+  body.in-room .topbar-actions {
+    margin-inline-start: 8px;
+  }
+}
+
+/* Tablet dikey: kameralar daha buyuk, yazma ve mikrofon yan yana */
+@media (min-width: 700px) and (orientation: portrait) {
+  body.in-room .app-shell {
+    gap: 10px;
+    padding-inline: max(18px, env(safe-area-inset-left));
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 0.42fr);
+    grid-template-rows: auto auto auto clamp(220px, 40dvh, 640px) minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'top top'
+      'strip strip'
+      'lang lang'
+      'video video'
+      'stream stream'
+      'caption caption'
+      'input mic';
+  }
+  body.in-room .orb-btn {
+    height: 100%;
+    min-height: 52px;
+  }
+}
+
+/* Yatay ekran (tablet, yatay telefon, bilgisayar): solda kameralar, sagda akis */
+@media (min-width: 700px) and (orientation: landscape) {
+  body.in-room .app-shell {
+    gap: 10px;
+    grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'top top'
+      'strip strip'
+      'video lang'
+      'video stream'
+      'video caption'
+      'mic input';
+  }
+  body.in-room .online-active-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  body.in-room .online-room-meta {
+    display: contents;
+  }
+  body.in-room .online-share-group {
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    order: 5;
+  }
+  body.in-room .online-active-row {
+    gap: 8px;
+    font-size: 0.8rem;
+  }
+  body.in-room .leave-btn {
+    order: 6;
+    margin-inline-start: 0;
+  }
+  body.in-room .orb-btn {
+    height: 100%;
+    min-height: 48px;
+  }
+}
+
+/* Genis ekranda davet linki de gorunur */
+@media (min-width: 1100px) and (orientation: landscape) {
+  body.in-room .invite-url {
+    display: block;
+    flex: 0 1 300px;
+    min-width: 160px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    border-radius: 999px;
+  }
+}
+
+/* Yatay telefon (alcak ekran): daha sikisik */
+@media (max-height: 520px) and (orientation: landscape) {
+  body.in-room .app-shell {
+    gap: 6px;
+    padding-block: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-bottom));
+  }
+  body.in-room .brand {
+    display: none;
+  }
+  body.in-room .mode-btn {
+    padding: 4px 10px;
+  }
+  body.in-room .online-active-row {
+    padding: 5px 8px;
+  }
+  body.in-room .lang-card {
+    padding: 4px 10px;
+  }
+  body.in-room .interim-box {
+    padding: 5px 10px;
+  }
+  body.in-room .interim-text {
+    -webkit-line-clamp: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.in-room .orb-btn {
+    transition: none;
+  }
+}

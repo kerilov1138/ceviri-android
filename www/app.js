@@ -988,6 +988,7 @@ function setMode(mode) {
   els.cameraStage.classList.toggle('hidden', mode !== 'camera');
   els.faceStage.classList.toggle('hidden', mode !== 'face');
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
+  updateRoomLayout();
   els.turnControls.classList.toggle('hidden', mode === 'online');
   els.textSpeakerSelect.classList.toggle('hidden', mode === 'online');
   updateAttachVisibility();
@@ -1031,9 +1032,11 @@ async function pollOnlineInfo() {
       if (info.onlineMode) {
         if (info.status === 'ready' && info.publicUrl) {
           setBadgeKey('online.ready');
+          els.tunnelStatusBadge.dataset.state = 'ready';
           updateInviteLink();
           return;
         }
+        els.tunnelStatusBadge.dataset.state = info.status === 'error' ? 'error' : 'connecting';
         if (info.status === 'error') {
           if (window.CeviriRelay) setBadgeKey('online.unreachable');
           else els.tunnelStatusBadge.textContent = info.error || 'Tünel hatası';
@@ -1086,6 +1089,7 @@ function connectToRoom(roomCode) {
   els.onlineJoinView.classList.add('hidden');
   els.onlineActiveView.classList.remove('hidden');
   updateInviteLink();
+  updateRoomLayout();
 
   updateAttachVisibility();
 
@@ -1575,7 +1579,14 @@ async function ensureMyLanguage(msg) {
   }
 }
 
+// Dar ekranda davet dugmesi kisa yazilir (tek sirada sigsin)
+function inviteLabel() {
+  const compact = window.matchMedia && window.matchMedia('(max-width: 699px)').matches;
+  return compact ? t('online.inviteShort') : t('online.copyInvite');
+}
+
 function renderRoomTools() {
+  if (!els.copyInviteBtn.dataset.copied) els.copyInviteBtn.textContent = inviteLabel();
   const tools = els.roomTools;
   if (!tools) return;
   const inRoom = Boolean(state.roomCode && state.participants.length);
@@ -1599,7 +1610,54 @@ function kickParticipant(clientId) {
   window.CeviriRelay.kick(state.roomCode, clientId);
 }
 
+// Odadayken tek ekran duzeni: kameralar, akis ve mikrofon kaydirmadan gorunur
+function updateRoomLayout() {
+  const inRoom = state.mode === 'online' && Boolean(state.roomCode);
+  document.body.classList.toggle('in-room', inRoom);
+  layoutVideoGrid();
+}
+
+// Kamera kutularini alana gore yerlestir: goruntu en az kirpilacak sutun sayisi
+function layoutVideoGrid() {
+  const grid = els.participantsGrid;
+  if (!grid) return;
+  if (!document.body.classList.contains('in-room')) {
+    grid.removeAttribute('data-layout');
+    grid.style.removeProperty('--cols');
+    grid.style.removeProperty('--rows');
+    return;
+  }
+  const n = grid.children.length;
+  const W = grid.clientWidth;
+  const H = grid.clientHeight;
+  if (!n || !W || !H) return;
+  const speaker = grid.querySelector('.p-tile.speaking');
+  if (speaker && n >= 3) {
+    // Konusan buyuk ustte, digerleri altta serit
+    grid.dataset.layout = 'speaker';
+    grid.style.setProperty('--cols', String(n - 1));
+    grid.style.removeProperty('--rows');
+    return;
+  }
+  const target = 4 / 3;
+  let best = 1;
+  let bestScore = Infinity;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const aspect = W / cols / (H / rows);
+    const score = Math.abs(Math.log(aspect / target)) + (cols * rows - n) * 0.15;
+    if (score < bestScore) {
+      bestScore = score;
+      best = cols;
+    }
+  }
+  grid.dataset.layout = 'even';
+  grid.style.setProperty('--cols', String(best));
+  grid.style.setProperty('--rows', String(Math.ceil(n / best)));
+}
+
 function renderParticipants() {
+  updateRoomLayout();
   renderRoomTools();
   // Grup odasinda tek bir "karsidakinin dili" yok: o kutu gizlenir
   const partnerCard = els.partnerLangSelect.closest('.lang-card');
@@ -1714,6 +1772,7 @@ function renderParticipants() {
       btn.disabled = !state.videoMesh;
     }
   });
+  layoutVideoGrid();
 }
 
 async function toggleMyCamera() {
@@ -1761,6 +1820,7 @@ function leaveOnlineRoom() {
   updateAttachVisibility();
   updateLanguageBadges();
   updateTurnUI();
+  updateRoomLayout();
 }
 
 function exportTranscript() {
@@ -1822,7 +1882,11 @@ function bindEvents() {
     try {
       await navigator.clipboard.writeText(els.inviteLinkInput.value);
       els.copyInviteBtn.textContent = t('msg.copied');
-      setTimeout(() => (els.copyInviteBtn.textContent = t('online.copyInvite')), 1600);
+      els.copyInviteBtn.dataset.copied = '1';
+      setTimeout(() => {
+        delete els.copyInviteBtn.dataset.copied;
+        els.copyInviteBtn.textContent = inviteLabel();
+      }, 1600);
     } catch {
       els.inviteLinkInput.select();
     }
@@ -1876,6 +1940,14 @@ function bindEvents() {
     state.videoMesh.setReceiveVideo(!state.videoMesh.receiveVideo);
     renderParticipants();
   });
+  // Ekran donunce / klavye acilinca kamera kutulari yeniden yerlesir
+  window.addEventListener('resize', () => {
+    layoutVideoGrid();
+    // Klavye acilinca / ekran donunce son mesaj gorunur kalsin
+    if (document.body.classList.contains('in-room')) els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    if (state.roomCode) renderRoomTools();
+  });
+
   // Grup odasinda konusma geri sayimi her saniye yenilenir
   setInterval(() => {
     if (state.mode === 'online' && state.roomCode && state.group && state.activeMicClientId) {

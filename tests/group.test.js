@@ -108,6 +108,17 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   assert.ok(!last(0).participants.some((p) => p.clientId === ids[6]), 'uyeler 7. kisiyi saymaz');
   console.log('ok 6 kisi siniri, 7. kisi oda dolu');
 
+  // Renkler: 6 kisinin her biri farkli renk, herkes ayni rengi gorur
+  await sleep(600);
+  const colorsOf = (i) => Object.fromEntries(last(i).participants.map((p) => [p.clientId, p.color]));
+  const c0 = colorsOf(0);
+  assert.equal(new Set(Object.values(c0)).size, 6, 'herkesin rengi farkli: ' + JSON.stringify(c0));
+  assert.ok(Object.values(c0).every((c) => c >= 0 && c < 6));
+  for (let i = 1; i < 6; i++) assert.deepEqual(colorsOf(i), c0, 'renkler her cihazda ayni');
+  m = await post(devs[2], `/api/rooms/${roomCode}/message`, { clientId: ids[2], text: 'renk', sourceLang: 'de-DE' });
+  assert.equal(m.data.color, c0[ids[2]], 'mesaj gonderenin rengini tasir');
+  console.log('ok kisiye ozel renkler');
+
   // Kamera durumu ve WebRTC sinyali (yalniz hedefe gider)
   devs[2].CeviriRelay.setCam(roomCode, true); await sleep(400);
   assert.equal(last(0).participants.find((p) => p.clientId === ids[2]).cam, true);
@@ -126,6 +137,9 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   assert.ok(!last(1).participants.some((p) => p.clientId === ids[5]), 'cikarilan listeden duser');
   assert.ok(last(1).participants.some((p) => p.clientId === ids[6]), 'bosalan yere bekleyen girer');
   rooms[5].es.close();
+  // Biri ayrilinca kalanlarin rengi degismez; bosalan yere gelen bos rengi alir
+  for (const [id, c] of Object.entries(colorsOf(1))) if (c0[id] !== undefined) assert.equal(c, c0[id], 'renk sabit kalir');
+  assert.equal(colorsOf(1)[ids[6]], c0[ids[5]], 'yeni gelen bosalan rengi alir');
   console.log('ok sahip cikarir, sahip olmayan cikaramaz');
 
   // Kilit: yeni gelen giremez, kilit acilinca bilgi herkese gider

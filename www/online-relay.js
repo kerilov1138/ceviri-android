@@ -28,7 +28,8 @@
   var HEARTBEAT_MS = 8000;
   var PARTICIPANT_TTL_MS = 25000;
   var HISTORY_LIMIT = 50;
-  var MAX_PARTICIPANTS = 6; // odada en fazla 6 kisi
+  var MAX_PARTICIPANTS = 6;
+  var COLOR_COUNT = 6; // sari, kirmizi, lacivert, gri, koyu yesil, pembe // odada en fazla 6 kisi
   var GROUP_MIN = 3; // 3+ kisi: soz sirasi (bas-konus), cevirmeyi her alici yapar
   var ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -267,6 +268,7 @@
         lastSeen: now,
         hand: typeof msg.handTs === 'number' ? msg.handTs : prev ? prev.hand : 0,
         cam: typeof msg.cam === 'boolean' ? msg.cam : prev ? prev.cam : false,
+        color: validColor(msg.color) ? msg.color : prev && validColor(prev.color) ? prev.color : -1,
       });
       if (msg.micActive) {
         this.applyRemoteMic(msg.from, true, msg.micTs || msg.ts);
@@ -426,6 +428,7 @@
       micTs: micActive ? this.activeMic.ts : 0,
       handTs: this.self.hand || 0,
       cam: Boolean(this.self.cam),
+      color: typeof this.self.color === 'number' ? this.self.color : -1,
       locked: this.locked,
       allowed: this.locked ? Array.from(this.allowed) : [],
       kicked: Array.from(this.kicked).slice(-50),
@@ -453,7 +456,7 @@
   RoomSession.prototype.allSorted = function () {
     var list = [];
     this.participants.forEach(function (p) {
-      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt, hand: p.hand || 0, cam: Boolean(p.cam) });
+      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt, hand: p.hand || 0, cam: Boolean(p.cam), color: validColor(p.color) ? p.color : -1 });
     });
     list.sort(function (a, b) { return a.joinedAt - b.joinedAt || (a.clientId < b.clientId ? -1 : 1); });
     return list;
@@ -581,6 +584,8 @@
       queue = queue.slice(1);
     }
 
+    this.resolveColor(members);
+
     var holder = holderId ? this.participants.get(holderId) : null;
     this.sink._emit('room_state', {
       roomCode: this.code,
@@ -597,6 +602,27 @@
     });
   };
 
+  // Her kisiye bir renk: odaya once girenin rengi korunur; sonra gelen,
+  // oncekilerin kullanmadigi ilk rengi alir (ayni anda girenlerde sonraki degistirir)
+  RoomSession.prototype.resolveColor = function (members) {
+    var me = this.self;
+    if (!me || !members.some(function (m) { return m.clientId === me.clientId; })) return;
+    var taken = {};
+    members.forEach(function (m) {
+      if (m.clientId === me.clientId || !validColor(m.color)) return;
+      var earlier = m.joinedAt < me.joinedAt || (m.joinedAt === me.joinedAt && m.clientId < me.clientId);
+      if (earlier) taken[m.color] = true;
+    });
+    if (validColor(me.color) && !taken[me.color]) return;
+    for (var c = 0; c < COLOR_COUNT; c++) {
+      if (!taken[c]) {
+        me.color = c;
+        this.sendPresence('presence');
+        return;
+      }
+    }
+  };
+
   RoomSession.prototype.join = function (sink, clientId, name, lang) {
     var self = this;
     this.sink = sink;
@@ -605,7 +631,8 @@
     var resume = this.lastSelf && this.lastSelf.clientId === clientId && Date.now() - (this.lastLeftAt || 0) < 20000;
     var keepJoined = resume ? this.lastSelf.joinedAt : Date.now();
     var keepCam = resume ? Boolean(this.lastSelf.cam) : false;
-    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam };
+    var keepColor = resume && typeof this.lastSelf.color === 'number' ? this.lastSelf.color : -1;
+    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam, color: keepColor };
     this.participants.set(clientId, this.self);
     sink._emit('history', { messages: this.messages.slice() });
     this.fileMetas.forEach(function (meta) { sink._emit('file_message', self.fileStatus(meta)); });
@@ -673,6 +700,7 @@
       size: size,
       chunks: chunks,
       timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+      color: validColor(raw.color) ? raw.color : -1,
     };
   }
 
@@ -713,6 +741,7 @@
       id: Date.now().toString(36) + '-' + randomId().slice(0, 8),
       senderId: this.self.clientId,
       senderName: this.self.name,
+      color: validColor(this.self.color) ? this.self.color : -1,
       name: cleanFileName(name, type),
       type: type,
       size: bytes.length,
@@ -850,6 +879,10 @@
     return typeof window.CeviriCensor === 'function' ? window.CeviriCensor(text, lang) : text;
   }
 
+  function validColor(c) {
+    return typeof c === 'number' && c >= 0 && c < COLOR_COUNT && Math.floor(c) === c;
+  }
+
   function sanitizeChat(raw, code) {
     if (!raw || typeof raw !== 'object') return null;
     var text = typeof raw.originalText === 'string' ? raw.originalText.slice(0, 4000) : '';
@@ -865,6 +898,7 @@
       translatedText: censorText(typeof raw.translatedText === 'string' ? raw.translatedText.slice(0, 8000) : '', raw.targetLang),
       latencyMs: typeof raw.latencyMs === 'number' ? raw.latencyMs : undefined,
       timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+      color: validColor(raw.color) ? raw.color : -1,
     };
   }
 
@@ -1001,6 +1035,7 @@
           roomCode: r.code,
           senderId: r.self.clientId,
           senderName: r.self.name || String(body.senderName || 'Kullanici'),
+          color: validColor(r.self.color) ? r.self.color : -1,
           sourceLang: sourceLang,
           targetLang: '',
           originalText: censorFn(text, sourceLang),
@@ -1030,6 +1065,7 @@
         roomCode: r.code,
         senderId: r.self.clientId,
         senderName: r.self.name || String(body.senderName || 'Kullanici'),
+        color: validColor(r.self.color) ? r.self.color : -1,
         sourceLang: sourceLang,
         targetLang: targetLang,
         originalText: text,

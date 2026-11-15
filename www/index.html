@@ -33,6 +33,15 @@
           <span class="status-dot"></span>
           <span id="statusText" data-i18n="status.idle">Hazır</span>
         </div>
+        <div id="modeMenuBtn" class="icon-btn ui-lang-btn mode-menu-btn" title="Çeviri Modu" data-i18n-attr="title:mode.aria">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <select id="modeMenuSelect" class="ui-lang-native" aria-label="Çeviri Modu" data-i18n-attr="aria-label:mode.aria">
+            <option value="camera" data-i18n="mode.camera">Kamera</option>
+            <option value="loop" data-i18n="mode.loop">Canlı Döngü</option>
+            <option value="face" data-i18n="mode.face">Yüz Yüze</option>
+            <option value="online" data-i18n="mode.online">Online Oda</option>
+          </select>
+        </div>
         <button id="exportBtn" class="icon-btn" title="Sohbeti İndir" aria-label="Sohbeti İndir" data-i18n-attr="title:btn.export;aria-label:btn.export">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </button>

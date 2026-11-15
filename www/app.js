@@ -772,6 +772,22 @@ async function handleUtterance(text, speaker) {
   }
 }
 
+// Online odada her kisinin rengi: sari, kirmizi, lacivert, gri, koyu yesil, pembe
+const PERSON_COLORS = ['#facc15', '#ef4444', '#3b5bdb', '#9ca3af', '#15803d', '#ec4899'];
+
+function personColor(clientId, fallbackIndex) {
+  if (state.mode !== 'online' || !state.roomCode) return '';
+  const p = clientId ? state.participants.find((x) => x.clientId === clientId) : null;
+  const idx = p && typeof p.color === 'number' && p.color >= 0 ? p.color : fallbackIndex;
+  return typeof idx === 'number' && idx >= 0 && idx < PERSON_COLORS.length ? PERSON_COLORS[idx] : '';
+}
+
+function paintPerson(el, color) {
+  el.classList.toggle('has-color', Boolean(color));
+  if (color) el.style.setProperty('--pc', color);
+  else el.style.removeProperty('--pc');
+}
+
 function appendMessage({
   id,
   speaker,
@@ -781,6 +797,8 @@ function appendMessage({
   originalText,
   translatedText,
   latencyMs,
+  senderId,
+  color,
 }) {
   if (id && state.seenMessageIds.has(id)) return;
   if (id) state.seenMessageIds.add(id);
@@ -804,6 +822,7 @@ function appendMessage({
 
   const card = document.createElement('article');
   card.className = `msg-card ${speaker}`;
+  paintPerson(card, personColor(senderId, color));
 
   const srcShort = findLanguage(sourceLang).short;
   const tgtShort = findLanguage(targetLang).short;
@@ -988,6 +1007,8 @@ function setMode(mode) {
   els.cameraStage.classList.toggle('hidden', mode !== 'camera');
   els.faceStage.classList.toggle('hidden', mode !== 'face');
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
+  const modeMenuSel = document.getElementById('modeMenuSelect');
+  if (modeMenuSel) modeMenuSel.value = mode;
   updateRoomLayout();
   els.turnControls.classList.toggle('hidden', mode === 'online');
   els.textSpeakerSelect.classList.toggle('hidden', mode === 'online');
@@ -1008,7 +1029,38 @@ function setMode(mode) {
 
 function getShareBaseUrl() {
   if (state.onlineInfo.publicUrl) return state.onlineInfo.publicUrl;
+  // Uygulamada bilgi henuz gelmediyse de davet linki web adresini gostersin
+  if (IS_NATIVE_APP && window.CEVIRI_WEB_URL) return String(window.CEVIRI_WEB_URL).replace(/\/+$/, '');
   return window.location.origin;
+}
+
+// Panoya kopyala: once modern yol, olmazsa (Android WebView, http) eski yol
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // eski yola gec
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function updateInviteLink() {
@@ -1418,6 +1470,7 @@ function onFileMessage(meta, roomCode) {
   els.emptyState.classList.add('hidden');
   const card = document.createElement('article');
   card.className = `msg-card file-card ${speaker}`;
+  paintPerson(card, personColor(meta.senderId, meta.color));
   card.dataset.fileId = meta.id;
   card.innerHTML = `
     <div class="msg-top">
@@ -1715,6 +1768,7 @@ function renderParticipants() {
     tile.querySelector('.p-name').textContent = isMe ? `${name} (${t('tile.you')})` : name;
     tile.querySelector('.p-lang').textContent = findLanguage(p.lang).short;
     tile.querySelector('.p-avatar').textContent = name.trim().charAt(0).toLocaleUpperCase();
+    paintPerson(tile, personColor(p.clientId, p.color));
     const speaking = state.activeMicClientId === p.clientId;
     tile.classList.toggle('speaking', speaking);
     const spk = tile.querySelector('.p-speaking');
@@ -1873,22 +1927,27 @@ function bindEvents() {
   els.modeLoopBtn.addEventListener('click', () => setMode('loop'));
   els.modeFaceBtn.addEventListener('click', () => setMode('face'));
   els.modeOnlineBtn.addEventListener('click', () => setMode('online'));
+  // Odadayken sekmeler yerine ust cubuktaki mod dugmesi (uygulamada)
+  const modeMenu = document.getElementById('modeMenuSelect');
+  if (modeMenu) modeMenu.addEventListener('change', (e) => setMode(e.target.value));
 
   els.createRoomBtn.addEventListener('click', createOnlineRoom);
   els.joinRoomBtn.addEventListener('click', joinOnlineRoom);
   els.leaveRoomBtn.addEventListener('click', leaveOnlineRoom);
   els.copyInviteBtn.addEventListener('click', async () => {
-    if (!els.inviteLinkInput.value) return;
-    try {
-      await navigator.clipboard.writeText(els.inviteLinkInput.value);
+    updateInviteLink();
+    const link = els.inviteLinkInput.value;
+    if (!link) return;
+    if (await copyText(link)) {
       els.copyInviteBtn.textContent = t('msg.copied');
       els.copyInviteBtn.dataset.copied = '1';
       setTimeout(() => {
         delete els.copyInviteBtn.dataset.copied;
         els.copyInviteBtn.textContent = inviteLabel();
       }, 1600);
-    } catch {
-      els.inviteLinkInput.select();
+    } else {
+      // Kopyalanamadiysa link gorunsun, elle kopyalanabilsin
+      showAlert(link);
     }
   });
 

@@ -1929,3 +1929,35 @@ body.in-room .orb-btn[data-active='true'][data-speaker='partner'] {
     transition: none;
   }
 }
+
+/* Online odada kisiye ozel renk: kamera cercevesi ve canli dokum kartlari */
+.p-tile.has-color {
+  border-color: color-mix(in srgb, var(--pc) 55%, transparent);
+}
+.p-tile.has-color.speaking {
+  border-color: var(--pc);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pc) 32%, transparent);
+}
+.p-tile.has-color .p-avatar {
+  background: color-mix(in srgb, var(--pc) 20%, transparent);
+  color: var(--pc);
+}
+.msg-card.has-color {
+  border-color: color-mix(in srgb, var(--pc) 45%, transparent);
+  border-left: 3px solid var(--pc);
+}
+.msg-card.has-color .msg-speaker {
+  color: var(--pc);
+}
+
+/* Odadayken uygulama da linkle acilan sayfa gibi gorunur:
+   sekme sirasi gizlenir, modlar ust cubuktaki tek dugmeden secilir */
+.mode-menu-btn {
+  display: none;
+}
+html:not(.guest-mode) body.in-room .mode-menu-btn {
+  display: inline-flex;
+}
+body.in-room .mode-switch {
+  display: none !important;
+}

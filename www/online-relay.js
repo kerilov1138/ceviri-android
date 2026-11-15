@@ -205,6 +205,9 @@
     this.activeMic = null; // {clientId, ts}
     this.sink = null; // FakeEventSource
     this.heartbeat = null;
+    this.locked = false; // oda sahibi yeni katilimi kapattiysa
+    this.allowed = new Set(); // kilitliyken odada kalabilecekler
+    this.kicked = new Set(); // oda sahibinin cikardiklari
     this.outFiles = new Map(); // bu cihazin gonderdigi dosyalar: id -> { meta, bytes }
     this.inFiles = new Map(); // gelen dosyalar: id -> { meta, parts, got, blob, ... }
     this.fileMetas = []; // odadaki dosyalarin listesi (gec gelenlere gecmis olarak gider)
@@ -251,6 +254,9 @@
   RoomSession.prototype.handle = function (msg) {
     var now = Date.now();
     if (msg.type === 'presence' || msg.type === 'hello') {
+      if (this.kicked.has(msg.from)) return; // cikarilan kisi geri gelemez
+      this.absorbRoomRules(msg);
+      if (this.self && this.kicked.has(this.self.clientId)) return;
       var isNew = !this.participants.has(msg.from);
       var prev = this.participants.get(msg.from);
       this.participants.set(msg.from, {
@@ -270,7 +276,8 @@
       if (isNew || msg.type === 'hello') {
         // Yeni gelene kendimizi ve gecmisi hemen bildir
         this.sendPresence('presence');
-        if (this.messages.length || this.fileMetas.length) {
+        var canSee = !this.locked || this.allowed.has(msg.from);
+        if (canSee && (this.messages.length || this.fileMetas.length)) {
           this.send({ type: 'history', messages: this.messages.slice(-HISTORY_LIMIT), files: this.fileMetas.slice(-FILE_HISTORY_LIMIT) });
         }
       }
@@ -284,6 +291,25 @@
       this.broadcastState();
       return;
     }
+
+    if (msg.type === 'kick') {
+      // Yalnizca oda sahibinin cikarma istegi gecerlidir
+      if (!this.isOwner(msg.from) || typeof msg.target !== 'string') return;
+      this.applyKick(msg.target);
+      return;
+    }
+
+    if (msg.type === 'lock') {
+      if (!this.isOwner(msg.from)) return;
+      this.locked = Boolean(msg.locked);
+      this.allowed = new Set(Array.isArray(msg.allowed) ? msg.allowed.map(String) : []);
+      this.broadcastState();
+      return;
+    }
+
+    if (this.kicked.has(msg.from)) return;
+    // Kilitli odada izinli listesinde olmayanin mesajlari yok sayilir
+    if (this.locked && !this.allowed.has(msg.from) && msg.type !== 'leave') return;
 
     if (msg.type === 'hand') {
       var ph = this.participants.get(msg.from);
@@ -400,6 +426,9 @@
       micTs: micActive ? this.activeMic.ts : 0,
       handTs: this.self.hand || 0,
       cam: Boolean(this.self.cam),
+      locked: this.locked,
+      allowed: this.locked ? Array.from(this.allowed) : [],
+      kicked: Array.from(this.kicked).slice(-50),
     });
   };
 
@@ -431,7 +460,76 @@
   };
 
   RoomSession.prototype.participantList = function () {
-    return this.allSorted().slice(0, MAX_PARTICIPANTS);
+    var self = this;
+    return this.allSorted()
+      .filter(function (p) {
+        if (self.kicked.has(p.clientId)) return false;
+        if (self.locked && !self.allowed.has(p.clientId)) return false;
+        return true;
+      })
+      .slice(0, MAX_PARTICIPANTS);
+  };
+
+  // Oda sahibi: odadaki en eski uye (odayi kuran). Ayrilinca siradaki olur.
+  RoomSession.prototype.ownerId = function () {
+    var m = this.participantList();
+    return m.length ? m[0].clientId : null;
+  };
+
+  RoomSession.prototype.isOwner = function (clientId) {
+    return Boolean(clientId) && this.ownerId() === clientId;
+  };
+
+  // Baskalarinin presence mesajindan oda kurallarini (kilit, cikarilanlar) ogren
+  RoomSession.prototype.absorbRoomRules = function (msg) {
+    var self = this;
+    if (Array.isArray(msg.kicked)) {
+      msg.kicked.forEach(function (id) {
+        if (typeof id === 'string' && !self.kicked.has(id)) self.applyKick(id, true);
+      });
+    }
+    if (msg.locked === true && Array.isArray(msg.allowed) && msg.allowed.length) {
+      // Kilitli bir odaya sonradan gelen: izinli listesinde yoksa giremez
+      if (!this.locked) {
+        this.locked = true;
+        this.allowed = new Set(msg.allowed.map(String));
+      }
+    } else if (msg.locked === false && this.locked && this.isOwner(msg.from)) {
+      this.locked = false;
+      this.allowed = new Set();
+    }
+  };
+
+  RoomSession.prototype.applyKick = function (target, silent) {
+    this.kicked.add(target);
+    this.allowed.delete(target);
+    this.participants.delete(target);
+    if (this.activeMic && this.activeMic.clientId === target) this.activeMic = null;
+    if (this.self && target === this.self.clientId) {
+      this.emitFile('kicked', {});
+      return;
+    }
+    if (!silent) this.broadcastState();
+  };
+
+  /** Oda sahibi: bir kisiyi odadan cikarir. */
+  RoomSession.prototype.kick = function (target) {
+    if (!this.self || !this.isOwner(this.self.clientId) || target === this.self.clientId) return false;
+    this.send({ type: 'kick', target: target });
+    this.applyKick(target);
+    return true;
+  };
+
+  /** Oda sahibi: odayi yeni katilima kilitler / acar. */
+  RoomSession.prototype.setLocked = function (locked) {
+    if (!this.self || !this.isOwner(this.self.clientId)) return false;
+    // Izinli liste kilitlemeden ONCE alinir (kilitliyken liste izinlilere gore suzulur)
+    var members = this.participantList().map(function (p) { return p.clientId; });
+    this.locked = Boolean(locked);
+    this.allowed = new Set(locked ? members : []);
+    this.send({ type: 'lock', locked: this.locked, allowed: Array.from(this.allowed) });
+    this.broadcastState();
+    return true;
   };
 
   RoomSession.prototype.isGroup = function () {
@@ -459,7 +557,8 @@
     var members = this.participantList();
     var memberIds = members.map(function (m) { return m.clientId; });
     var selfId = this.self ? this.self.clientId : null;
-    var full = Boolean(selfId) && memberIds.indexOf(selfId) < 0;
+    var lockedOut = Boolean(selfId) && this.locked && !this.allowed.has(selfId);
+    var full = Boolean(selfId) && memberIds.indexOf(selfId) < 0 && !lockedOut && !this.kicked.has(selfId);
     var group = members.length >= GROUP_MIN;
     if (this.activeMic && memberIds.indexOf(this.activeMic.clientId) < 0) this.activeMic = null;
 
@@ -491,6 +590,9 @@
       group: group,
       queue: queue.map(function (q) { return q.clientId; }),
       full: full,
+      lockedOut: lockedOut,
+      locked: this.locked,
+      ownerId: this.ownerId(),
       maxParticipants: MAX_PARTICIPANTS,
     });
   };
@@ -498,8 +600,11 @@
   RoomSession.prototype.join = function (sink, clientId, name, lang) {
     var self = this;
     this.sink = sink;
-    var keepJoined = this.lastSelf && this.lastSelf.clientId === clientId ? this.lastSelf.joinedAt : Date.now();
-    var keepCam = this.lastSelf && this.lastSelf.clientId === clientId ? Boolean(this.lastSelf.cam) : false;
+    // Kisa kopma (yeniden baglanma) sirayi/sahipligi korur; gercekten ayrilip
+    // sonra donen kisi en sona eklenir (sahiplik siradakinde kalir)
+    var resume = this.lastSelf && this.lastSelf.clientId === clientId && Date.now() - (this.lastLeftAt || 0) < 20000;
+    var keepJoined = resume ? this.lastSelf.joinedAt : Date.now();
+    var keepCam = resume ? Boolean(this.lastSelf.cam) : false;
     this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam };
     this.participants.set(clientId, this.self);
     sink._emit('history', { messages: this.messages.slice() });
@@ -523,6 +628,7 @@
       this.send({ type: 'leave' });
       this.participants.delete(this.self.clientId);
       this.lastSelf = this.self;
+      this.lastLeftAt = Date.now();
     }
     this.sink = null;
     this.self = null;
@@ -987,6 +1093,16 @@
       return room.send({ type: 'rtc', to: String(to), data: data });
     },
     MAX_PARTICIPANTS: MAX_PARTICIPANTS,
+    /** Oda sahibi: kisiyi cikar */
+    kick: function (code, target) {
+      var room = rooms[sanitizeRoomCode(code)];
+      return Boolean(room && room.kick(String(target)));
+    },
+    /** Oda sahibi: odayi kilitle / ac */
+    setLocked: function (code, locked) {
+      var room = rooms[sanitizeRoomCode(code)];
+      return Boolean(room && room.setLocked(locked));
+    },
     /** Odaya fotograf/PDF gonderir. bytes: Uint8Array */
     sendFile: function (code, name, type, bytes, onProgress) {
       var room = rooms[sanitizeRoomCode(code)];

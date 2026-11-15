@@ -29,7 +29,7 @@ function makeDevice(name, brokers) {
 function openRoom(dev, code, clientId, name, lang) {
   const events = [];
   const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}`);
-  for (const t of ['room_state', 'history', 'chat_message', 'file_message', 'file_progress', 'file_ready', 'file_failed', 'rtc_signal']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
+  for (const t of ['room_state', 'history', 'chat_message', 'file_message', 'file_progress', 'file_ready', 'file_failed', 'rtc_signal', 'kicked']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
 const post = async (dev, path, body) => { const r = await dev.fetch(path, { method: 'POST', body: JSON.stringify(body) }); return { status: r.status, data: await r.json() }; };
@@ -38,8 +38,8 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
 (async () => {
   const b1 = await startBroker(18885);
   const brokers = ['ws://127.0.0.1:18885/mqtt'];
-  const names = ['Ali', 'John', 'Hans', 'Yuki', 'Ana', 'Ivan', 'Zoe'];
-  const langs = ['tr-TR', 'en-US', 'de-DE', 'ja-JP', 'es-ES', 'ru-RU', 'fr-FR'];
+  const names = ['Ali', 'John', 'Hans', 'Yuki', 'Ana', 'Ivan', 'Zoe', 'Lea'];
+  const langs = ['tr-TR', 'en-US', 'de-DE', 'ja-JP', 'es-ES', 'ru-RU', 'fr-FR', 'it-IT'];
   const devs = names.map((n) => makeDevice(n, brokers));
   for (const d of devs) await d.fetch('/api/online-info');
   await sleep(600);
@@ -117,12 +117,42 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   assert.equal(rooms[3].events.find((e) => e.type === 'rtc_signal').data.from, ids[2]);
   console.log('ok kamera durumu ve hedefli sinyal');
 
+  // Oda sahibi: ilk kuran (Ali). Sahip olmayan cikaramaz; sahip cikarir.
+  for (let i = 0; i < 6; i++) assert.equal(last(i).ownerId, ids[0], 'herkes Ali\'yi sahip gorur');
+  assert.equal(devs[1].CeviriRelay.kick(roomCode, ids[2]), false, 'sahip olmayan cikaramaz');
+  assert.equal(devs[0].CeviriRelay.kick(roomCode, ids[5]), true);
+  await sleep(1200);
+  assert.equal(rooms[5].events.filter((e) => e.type === 'kicked').length, 1, 'cikarilan haber alir');
+  assert.ok(!last(1).participants.some((p) => p.clientId === ids[5]), 'cikarilan listeden duser');
+  assert.ok(last(1).participants.some((p) => p.clientId === ids[6]), 'bosalan yere bekleyen girer');
+  rooms[5].es.close();
+  console.log('ok sahip cikarir, sahip olmayan cikaramaz');
+
+  // Kilit: yeni gelen giremez, kilit acilinca bilgi herkese gider
+  assert.equal(devs[1].CeviriRelay.setLocked(roomCode, true), false, 'sahip olmayan kilitleyemez');
+  rooms[6].es.close(); await sleep(600);
+  assert.equal(devs[0].CeviriRelay.setLocked(roomCode, true), true); await sleep(500);
+  assert.equal(last(2).locked, true);
+  rooms[7] = openRoom(devs[7], roomCode, ids[7], names[7], langs[7]); await sleep(1500);
+  assert.equal(last(7).lockedOut, true, 'kilitli odaya giremez');
+  assert.ok(!last(0).participants.some((p) => p.clientId === ids[7]), 'uyeler onu saymaz');
+  rooms[7].es.close();
+  devs[0].CeviriRelay.setLocked(roomCode, false); await sleep(500);
+  assert.equal(last(2).locked, false);
+  console.log('ok oda kilidi');
+
   // 2 kisiye dus: grup kalkar, gonderen yine cevirir
-  for (let i = 6; i >= 2; i--) rooms[i].es.close();
+  for (let i = 4; i >= 2; i--) rooms[i].es.close();
   await sleep(900);
   assert.equal(last(0).group, false); assert.equal(last(0).participants.length, 2); assert.deepEqual(last(0).queue, []);
   m = await post(devs[0], `/api/rooms/${roomCode}/message`, { clientId: ids[0], text: 'tekrar iki kisiyiz', sourceLang: 'tr-TR' });
   assert.equal(m.data.translatedText, '[en] tekrar iki kisiyiz');
   console.log('ok 2 kisiye donunce bugunku davranis');
+
+  // Sahip ayrilinca yetki siradakine gecer
+  rooms[0].es.close(); await sleep(800);
+  assert.equal(last(1).ownerId, ids[1], 'yetki John\'a gecti');
+  assert.equal(devs[1].CeviriRelay.setLocked(roomCode, true), true);
+  console.log('ok sahiplik devri');
   console.log('ALL GROUP TESTS PASS'); process.exit(0);
 })().catch((e) => { console.error('FAIL', String(e && e.message).slice(0, 300), String(e && e.stack).split('\n').slice(1, 3).join(' | ')); process.exit(1); });

@@ -76,6 +76,10 @@ const state = {
   participants: [],
   handRaised: false,
   turnTimer: null,
+  turnStartedAt: 0, // benim konusmamin baslangici (geri sayim)
+  holderSince: 0, // su anki konusanin baslangici (yerel saat)
+  ownerId: null,
+  roomLocked: false,
   incomingChain: Promise.resolve(),
   videoMesh: null,
 };
@@ -151,6 +155,10 @@ const els = {
   textInput: document.getElementById('textInput'),
   attachBtn: document.getElementById('attachBtn'),
   participantsGrid: document.getElementById('participantsGrid'),
+  roomTools: document.getElementById('roomTools'),
+  lockRoomBtn: document.getElementById('lockRoomBtn'),
+  lockedBadge: document.getElementById('lockedBadge'),
+  videoReceiveBtn: document.getElementById('videoReceiveBtn'),
   attachInput: document.getElementById('attachInput'),
   exportBtn: document.getElementById('exportBtn'),
   clearBtn: document.getElementById('clearBtn'),
@@ -268,7 +276,9 @@ function updateTurnUI() {
     : lockedByRemote
       ? t('orb.locked')
       : state.isActive
-        ? t('orb.stop')
+        ? state.mode === 'online' && state.group && state.turnStartedAt
+          ? `${t('orb.stop')} · ${turnSecondsLeft(state.turnStartedAt)}`
+          : t('orb.stop')
         : t('orb.start');
 
   els.faceMeCard.classList.toggle('active-me', state.isActive && isMe);
@@ -595,6 +605,11 @@ function startListening() {
       state.pendingTranscript = '';
       if (trailing) {
         await handleUtterance(trailing, 'me');
+      } else if (state.group && state.queue.length && state.activeMicClientId === state.clientId && state.isActive) {
+        // Grup: sirada bekleyen varken konusan sustu (tanima "ses yok" ile bitti)
+        // -> soz hemen siradakine gecer (konusmanin ortasinda kesmez)
+        stopLiveSession();
+        return;
       }
       if (state.isActive && gen === state.recognitionGen) {
         state.resumeTimer = setTimeout(() => {
@@ -887,13 +902,24 @@ async function startLiveSession(speaker = state.activeSpeaker) {
   startAudioVisualizer();
   startListening();
 
-  // Grup odasinda bir konusma en fazla 45 saniye: sonra soz siradakine gecer
+  startTurnClock();
+}
+
+// Grup odasinda bir konusma en fazla 45 saniye: sonra soz siradakine gecer
+function startTurnClock() {
   clearTimeout(state.turnTimer);
+  state.turnTimer = null;
+  state.turnStartedAt = Date.now();
   if (state.mode === 'online' && state.group) {
     state.turnTimer = setTimeout(() => {
       if (state.isActive && state.mode === 'online' && state.group) stopLiveSession();
     }, GROUP_TURN_MS);
   }
+}
+
+function turnSecondsLeft(since) {
+  if (!since) return Math.round(GROUP_TURN_MS / 1000);
+  return Math.max(0, Math.ceil((GROUP_TURN_MS - (Date.now() - since)) / 1000));
 }
 
 // Grup odasinda soz iste / siradan cik
@@ -914,6 +940,8 @@ async function toggleHand() {
 
 async function stopLiveSession() {
   clearTimeout(state.turnTimer);
+  state.turnTimer = null;
+  state.turnStartedAt = 0;
   const pending = state.pendingTranscript.trim();
   state.pendingTranscript = '';
   state.isActive = false;
@@ -1075,9 +1103,13 @@ function connectToRoom(roomCode) {
     const others = (data.participants || []).filter((p) => p.clientId !== state.clientId);
     const partner = others[0];
 
-    state.activeMicClientId = data.activeMicClientId || null;
+    const newHolder = data.activeMicClientId || null;
+    if (newHolder !== state.activeMicClientId) state.holderSince = newHolder ? Date.now() : 0;
+    state.activeMicClientId = newHolder;
     state.activeMicName = data.activeMicName || null;
     state.group = Boolean(data.group);
+    state.ownerId = data.ownerId || null;
+    state.roomLocked = Boolean(data.locked);
     state.queue = Array.isArray(data.queue) ? data.queue : [];
     state.participants = data.participants || [];
 
@@ -1085,6 +1117,16 @@ function connectToRoom(roomCode) {
       showAlert(t('room.full', { n: data.maxParticipants || 6 }));
       leaveOnlineRoom();
       return;
+    }
+    if (data.lockedOut) {
+      showAlert(t('room.lockedOut'));
+      leaveOnlineRoom();
+      return;
+    }
+    // Oda 2 kisiden gruba gecerken mikrofonu tutan kisiye de 45 sn siniri baslar
+    // (yoksa 2 kisilik aliskanlikla acik birakilan mikrofon sozu hic birakmiyordu)
+    if (state.group && state.isActive && state.activeMicClientId === state.clientId && !state.turnTimer) {
+      startTurnClock();
     }
 
     renderParticipants();
@@ -1163,6 +1205,11 @@ function connectToRoom(roomCode) {
     const raw = JSON.parse(event.data);
     // Mesajlar geldikleri sirayla islenir (ceviri + seslendirme ust uste binmesin)
     state.incomingChain = state.incomingChain.then(() => handleIncomingChat(raw)).catch(() => {});
+  });
+
+  es.addEventListener('kicked', () => {
+    showAlert(t('owner.kicked'));
+    leaveOnlineRoom();
   });
 
   es.addEventListener('rtc_signal', (event) => {
@@ -1528,7 +1575,32 @@ async function ensureMyLanguage(msg) {
   }
 }
 
+function renderRoomTools() {
+  const tools = els.roomTools;
+  if (!tools) return;
+  const inRoom = Boolean(state.roomCode && state.participants.length);
+  tools.classList.toggle('hidden', !inRoom);
+  const amOwner = inRoom && state.ownerId === state.clientId;
+  els.lockRoomBtn.classList.toggle('hidden', !amOwner);
+  els.lockRoomBtn.textContent = state.roomLocked ? t('owner.unlock') : t('owner.lock');
+  els.lockedBadge.classList.toggle('hidden', !(inRoom && state.roomLocked && !amOwner));
+  els.lockedBadge.textContent = t('room.lockedInfo');
+  const receiving = !state.videoMesh || state.videoMesh.receiveVideo;
+  els.videoReceiveBtn.textContent = receiving ? t('video.receiveOff') : t('video.receiveOn');
+  els.videoReceiveBtn.classList.toggle('active', !receiving);
+  els.videoReceiveBtn.disabled = !state.videoMesh;
+}
+
+function kickParticipant(clientId) {
+  if (state.ownerId !== state.clientId || !window.CeviriRelay) return;
+  const p = state.participants.find((x) => x.clientId === clientId);
+  const name = censor((p && p.name) || '', state.myLang) || '?';
+  if (!window.confirm(t('owner.kickConfirm', { name }))) return;
+  window.CeviriRelay.kick(state.roomCode, clientId);
+}
+
 function renderParticipants() {
+  renderRoomTools();
   // Grup odasinda tek bir "karsidakinin dili" yok: o kutu gizlenir
   const partnerCard = els.partnerLangSelect.closest('.lang-card');
   if (partnerCard) partnerCard.classList.toggle('hidden', Boolean(state.roomCode && state.group));
@@ -1554,7 +1626,7 @@ function renderParticipants() {
       tile.innerHTML = `
         <video class="p-video hidden" autoplay playsinline muted></video>
         <div class="p-avatar" aria-hidden="true"></div>
-        <div class="p-badges"><span class="p-speaking hidden">🎙️</span><span class="p-hand hidden"></span></div>
+        <div class="p-badges"><span class="p-owner hidden">👑</span><span class="p-speaking hidden">🎙️</span><span class="p-hand hidden"></span></div>
         <div class="p-footer">
           <span class="p-name" dir="auto"></span>
           <span class="p-lang"></span>
@@ -1567,6 +1639,14 @@ function renderParticipants() {
         btn.className = 'p-cam-btn';
         btn.addEventListener('click', toggleMyCamera);
         tile.appendChild(btn);
+      } else {
+        // Oda sahibi icin: bu kisiyi odadan cikar
+        const kick = document.createElement('button');
+        kick.type = 'button';
+        kick.className = 'p-kick-btn hidden';
+        kick.textContent = '✕';
+        kick.addEventListener('click', () => kickParticipant(p.clientId));
+        tile.appendChild(kick);
       }
       tiles.set(p.clientId, tile);
     }
@@ -1579,7 +1659,22 @@ function renderParticipants() {
     tile.querySelector('.p-avatar').textContent = name.trim().charAt(0).toLocaleUpperCase();
     const speaking = state.activeMicClientId === p.clientId;
     tile.classList.toggle('speaking', speaking);
-    tile.querySelector('.p-speaking').classList.toggle('hidden', !speaking);
+    const spk = tile.querySelector('.p-speaking');
+    spk.classList.toggle('hidden', !speaking);
+    // Grup odasinda konusanin kalan suresi herkese gorunur
+    spk.textContent = speaking && state.group
+      ? `🎙️ ${turnSecondsLeft(isMe && state.turnStartedAt ? state.turnStartedAt : state.holderSince)}`
+      : '🎙️';
+    const isOwnerTile = state.ownerId === p.clientId;
+    const own = tile.querySelector('.p-owner');
+    own.classList.toggle('hidden', !isOwnerTile);
+    own.title = t('owner.badge');
+    const kickBtn = tile.querySelector('.p-kick-btn');
+    if (kickBtn) {
+      kickBtn.classList.toggle('hidden', state.ownerId !== state.clientId);
+      kickBtn.title = t('owner.kick');
+      kickBtn.setAttribute('aria-label', `${t('owner.kick')}: ${p.name || ''}`);
+    }
     const qpos = state.group ? state.queue.indexOf(p.clientId) : -1;
     const hand = tile.querySelector('.p-hand');
     hand.classList.toggle('hidden', qpos < 0);
@@ -1589,7 +1684,9 @@ function renderParticipants() {
     const video = tile.querySelector('.p-video');
     const stream = isMe ? (state.videoMesh && state.videoMesh.localStream) : remoteStreams.get(p.clientId);
     const camOn = isMe ? Boolean(state.videoMesh && state.videoMesh.cameraOn) : Boolean(p.cam);
-    const show = Boolean(camOn && stream);
+    // "Goruntuleri alma" acikken baskalarinin goruntusu gelmez (veri tasarrufu)
+    const receiving = isMe || !state.videoMesh || state.videoMesh.receiveVideo;
+    const show = Boolean(camOn && stream && receiving);
     if (show && video.srcObject !== stream) {
       video.srcObject = stream;
       video.play().catch(() => {});
@@ -1602,7 +1699,7 @@ function renderParticipants() {
     // Kamerasi acik: goruntu gelene kadar "Baglaniyor...", kurulamazsa uyari
     const connState = peerStates.get(p.clientId);
     const failed = !isMe && camOn && connState === 'failed';
-    const connecting = !isMe && camOn && !show && !failed;
+    const connecting = !isMe && camOn && !show && !failed && receiving;
     const note = tile.querySelector('.p-note');
     note.classList.toggle('hidden', !failed && !connecting);
     note.textContent = failed ? t('video.noConn') : connecting ? t('online.connecting') : '';
@@ -1646,6 +1743,9 @@ function leaveOnlineRoom() {
   state.queue = [];
   state.participants = [];
   state.handRaised = false;
+  state.ownerId = null;
+  state.roomLocked = false;
+  state.holderSince = 0;
   renderParticipants();
   if (state.eventSource) {
     state.eventSource.close();
@@ -1767,6 +1867,22 @@ function bindEvents() {
       startLiveSession('partner');
     }
   });
+
+  els.lockRoomBtn.addEventListener('click', () => {
+    if (state.roomCode && window.CeviriRelay) window.CeviriRelay.setLocked(state.roomCode, !state.roomLocked);
+  });
+  els.videoReceiveBtn.addEventListener('click', () => {
+    if (!state.videoMesh) return;
+    state.videoMesh.setReceiveVideo(!state.videoMesh.receiveVideo);
+    renderParticipants();
+  });
+  // Grup odasinda konusma geri sayimi her saniye yenilenir
+  setInterval(() => {
+    if (state.mode === 'online' && state.roomCode && state.group && state.activeMicClientId) {
+      renderParticipants();
+      updateTurnUI();
+    }
+  }, 1000);
 
   els.attachInput.addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];

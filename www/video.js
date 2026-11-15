@@ -27,6 +27,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
   const peers = new Map(); // id -> { pc, polite, makingOffer, ignoreOffer, sender }
   let localStream = null;
   let destroyed = false;
+  let receiveVideo = true; // false: "Goruntuleri alma" (veri tasarrufu)
 
   function send(to, data) {
     if (!destroyed) sendSignal(to, data);
@@ -43,12 +44,30 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
     }
   }
 
+  // Alma tercihini baglantiya uygula: almak istemiyorsak karsi taraf goruntu
+  // GONDERMEZ (yon 'sendonly'/'inactive' olur, mobil veri harcanmaz)
+  function applyDirections(peer) {
+    for (const tr of peer.pc.getTransceivers()) {
+      if (tr.stopped || (tr.receiver && tr.receiver.track && tr.receiver.track.kind !== 'video')) continue;
+      const sending = Boolean(peer.sender && tr.sender === peer.sender && tr.sender.track);
+      const want = sending ? (receiveVideo ? 'sendrecv' : 'sendonly') : receiveVideo ? 'recvonly' : 'inactive';
+      if (tr.direction !== want) {
+        try {
+          tr.direction = want;
+        } catch {
+          // kapali aktarici
+        }
+      }
+    }
+  }
+
   function addLocalTrack(peer) {
     if (!localStream || peer.sender) return;
     const track = localStream.getVideoTracks()[0];
     if (!track) return;
     peer.sender = peer.pc.addTrack(track, localStream);
     limitBitrate(peer.sender);
+    applyDirections(peer);
   }
 
   function createPeer(id) {
@@ -126,6 +145,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       await pc.setRemoteDescription(desc);
       await flushCandidates(peer);
       if (desc.type === 'offer') {
+        applyDirections(peer);
         await pc.setLocalDescription();
         send(peer.id, { description: pc.localDescription.toJSON() });
       }
@@ -199,8 +219,19 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
             // yoksay
           }
           peer.sender = null;
+          applyDirections(peer);
         }
       }
+    },
+
+    get receiveVideo() {
+      return receiveVideo;
+    },
+
+    /** Veri tasarrufu: false ise diger kisiler bana goruntu gondermez. */
+    setReceiveVideo(on) {
+      receiveVideo = Boolean(on);
+      for (const peer of peers.values()) applyDirections(peer);
     },
 
     destroy() {

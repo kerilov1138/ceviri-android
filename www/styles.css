@@ -1383,3 +1383,53 @@ img.file-thumb {
 #mainToggleBtn.in-queue {
   box-shadow: 0 0 0 2px var(--partner);
 }
+
+/* Oda araclari: kilit (oda sahibi), kilitli bilgisi, goruntuleri alma */
+.room-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.room-tool-btn {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+.room-tool-btn.active {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.locked-badge {
+  font-size: 0.8rem;
+  color: var(--warn);
+}
+.p-kick-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.p-kick-btn:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Konusanin kutusu buyuk ve en ustte */
+.p-tile.speaking {
+  grid-column: 1 / -1;
+  order: -1;
+  aspect-ratio: 16 / 9;
+}
+.p-tile.speaking .p-avatar {
+  width: 72px;
+  height: 72px;
+  font-size: 2rem;
+}

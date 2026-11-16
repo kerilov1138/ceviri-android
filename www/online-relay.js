@@ -1085,7 +1085,8 @@
   // Tarayicida acilmissa bulundugu adres kullanilir.
   function webUrl() {
     var isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
-    if (!isNative && /^https?:$/.test(window.location.protocol)) {
+    // Bilgisayar surumu yerel (localhost) calisir: davet linki web surumune gider
+    if (!isNative && !window.CEVIRI_DESKTOP && /^https?:$/.test(window.location.protocol)) {
       return (window.location.origin + window.location.pathname).replace(/\/(index\.html)?$/, '');
     }
     return String(window.CEVIRI_WEB_URL || '').replace(/\/+$/, '');

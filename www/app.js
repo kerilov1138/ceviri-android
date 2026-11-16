@@ -11,7 +11,9 @@ const IS_NATIVE_APP = Boolean(window.Capacitor && window.Capacitor.isNativePlatf
 
 // Davet linki / QR ile web sitesinden gelen kisi (misafir): yalnizca Online Oda gorur.
 // Kamera, Canli Dongu ve Yuz Yuze sekmeleri yalnizca uygulamada (APK) vardir.
-const IS_GUEST = !IS_NATIVE_APP;
+// Bilgisayar surumu (CEVIRI_WIN): tarayicida acilir ama uygulamadaki tum modlar vardir
+const IS_DESKTOP = !IS_NATIVE_APP && Boolean(window.CEVIRI_DESKTOP);
+const IS_GUEST = !IS_NATIVE_APP && !IS_DESKTOP;
 if (IS_GUEST) document.documentElement.classList.add('guest-mode');
 
 let cameraCtl = null; // kamera sekmesi (yalnizca uygulamada)
@@ -1030,7 +1032,7 @@ function setMode(mode) {
 function getShareBaseUrl() {
   if (state.onlineInfo.publicUrl) return state.onlineInfo.publicUrl;
   // Uygulamada bilgi henuz gelmediyse de davet linki web adresini gostersin
-  if (IS_NATIVE_APP && window.CEVIRI_WEB_URL) return String(window.CEVIRI_WEB_URL).replace(/\/+$/, '');
+  if ((IS_NATIVE_APP || IS_DESKTOP) && window.CEVIRI_WEB_URL) return String(window.CEVIRI_WEB_URL).replace(/\/+$/, '');
   return window.location.origin;
 }
 

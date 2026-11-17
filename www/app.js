@@ -364,6 +364,29 @@ function stopSpeaking() {
   }
 }
 
+// iPhone/iPad (iOS'ta Chrome dahil): tarayici, kullanici bir kez dokunmadan
+// sayfanin kendiliginden baslattigi sesli okumayi sessizce engeller. Gelen
+// ceviriler dokunmadan okundugu icin sesi ilk dokunuslarda bir kez "acariz":
+// duyulmayan bos bir okuma baslatilir, sonraki tum okumalar serbest kalir.
+let speechUnlockTries = 0;
+function unlockSpeech() {
+  if (speechUnlockTries >= 3 || !('speechSynthesis' in window)) return;
+  const synth = window.speechSynthesis;
+  if (synth.speaking || synth.pending) return;
+  speechUnlockTries += 1;
+  try {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    synth.speak(u);
+    if (synth.paused) synth.resume();
+  } catch {
+    // desteklenmiyor
+  }
+}
+['touchend', 'click', 'keydown'].forEach((ev) =>
+  document.addEventListener(ev, unlockSpeech, { capture: true, passive: true })
+);
+
 function speakText(text, langCode) {
   text = stripMaskForSpeech(censor(text, langCode));
   return new Promise((resolve) => {
@@ -372,6 +395,9 @@ function speakText(text, langCode) {
       return;
     }
 
+    // iOS: cancel()'in hemen ardindan gelen speak() bazen yutulur; bir sey
+    // calarken kesildiyse yeni okumayi kisa bir bekleyisle baslat
+    const busy = window.speechSynthesis.speaking || window.speechSynthesis.pending;
     stopSpeaking();
 
     const utterance = new SpeechSynthesisUtterance(text);
@@ -404,7 +430,12 @@ function speakText(text, langCode) {
       finish();
     }, maxMs);
 
-    window.speechSynthesis.speak(utterance);
+    const start = () => {
+      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+      window.speechSynthesis.speak(utterance);
+    };
+    if (busy) setTimeout(start, 80);
+    else start();
   });
 }
 

@@ -42,7 +42,7 @@ function decodeInvite(str) {
 function readGuestInvite() {
   if (!IS_GUEST) return null;
   let invite = null;
-  const m = window.location.hash.match(/[#&]j=([A-Za-z0-9_-]+)/);
+  const m = window.location.hash.match(/[#&]j=([A-Za-z0-9_-]+)/) || window.location.hash.match(/^#([A-Za-z0-9_-]{20,})$/);
   if (m) invite = decodeInvite(m[1]);
   const params = new URLSearchParams(window.location.search);
   // Linki adres cubugundan sil (kopyalanip baskasina iletilemesin, oda kodu gorunmesin)
@@ -167,6 +167,8 @@ const state = {
   holderSince: 0, // su anki konusanin baslangici (yerel saat)
   ownerId: null,
   roomLocked: false,
+  lobby: [], // kapida bekleyenler (oda sahibi gorur)
+  awaitingApproval: false, // ben kapida bekliyorum (linkle gelen misafir)
   incomingChain: Promise.resolve(),
   videoMesh: null,
 };
@@ -352,7 +354,7 @@ function updateTurnUI() {
   const inQueue = groupWait && state.queue.includes(state.clientId);
   // 2 kisi: karsidaki konusurken dugme kilitli (bugunku davranis).
   // 3+ kisi: dugme "Soz Iste" / "Siradan Cik" olur.
-  els.mainToggleBtn.disabled = lockedByRemote && !state.group;
+  els.mainToggleBtn.disabled = (lockedByRemote && !state.group) || (state.mode === 'online' && state.awaitingApproval);
   els.mainToggleBtn.classList.toggle('locked-remote', lockedByRemote && !state.group);
   els.mainToggleBtn.classList.toggle('raise-hand', groupWait);
   els.mainToggleBtn.classList.toggle('in-queue', inQueue);
@@ -367,6 +369,7 @@ function updateTurnUI() {
           ? `${t('orb.stop')} · ${turnSecondsLeft(state.turnStartedAt)}`
           : t('orb.stop')
         : t('orb.start');
+  if (state.mode === 'online' && state.awaitingApproval) els.orbLabel.textContent = t('lobby.waitingShort');
 
   els.faceMeCard.classList.toggle('active-me', state.isActive && isMe);
   els.facePartnerCard.classList.toggle('active-partner', state.isActive && !isMe);
@@ -1189,7 +1192,7 @@ function updateInviteLink(fresh) {
     state.inviteTokenRoom = state.roomCode;
   }
   if (!state.inviteToken) return;
-  els.inviteLinkInput.value = `${getShareBaseUrl()}/#j=${encodeInvite(state.roomCode, state.inviteToken)}`;
+  els.inviteLinkInput.value = `${getShareBaseUrl()}/#${encodeInvite(state.roomCode, state.inviteToken)}`;
 }
 
 async function pollOnlineInfo() {
@@ -1311,6 +1314,21 @@ function connectToRoom(roomCode) {
       showAlert(t(data.invite === 'used' ? 'invite.used' : 'invite.invalid'));
       return;
     }
+    // Kapida bekleme: linkle gelen, oda sahibi "Kabul et" diyene kadar iceri giremez
+    const wasWaiting = state.awaitingApproval;
+    state.awaitingApproval = data.invite === 'waiting';
+    const prevLobby = state.lobby.length;
+    state.lobby = data.lobby || [];
+    if (navigator.vibrate && state.ownerId === state.clientId && state.lobby.length > prevLobby) navigator.vibrate([80, 60, 80]);
+    if (navigator.vibrate && wasWaiting && !state.awaitingApproval) navigator.vibrate(150);
+    setWaitingInputs(state.awaitingApproval);
+    if (state.awaitingApproval) {
+      renderParticipants();
+      setPresenceKey('lobby.waitingSelf');
+      setInterimKey('lobby.waitingSelf');
+      updateTurnUI();
+      return;
+    }
     // Oda 2 kisiden gruba gecerken mikrofonu tutan kisiye de 45 sn siniri baslar
     // (yoksa 2 kisilik aliskanlikla acik birakilan mikrofon sozu hic birakmiyordu)
     if (state.group && state.isActive && state.activeMicClientId === state.clientId && !state.turnTimer) {
@@ -1395,9 +1413,16 @@ function connectToRoom(roomCode) {
     state.incomingChain = state.incomingChain.then(() => handleIncomingChat(raw)).catch(() => {});
   });
 
-  es.addEventListener('kicked', () => {
-    showAlert(t('owner.kicked'));
+  es.addEventListener('kicked', (event) => {
+    let reason = '';
+    try {
+      reason = JSON.parse(event.data || '{}').reason || '';
+    } catch {
+      // yoksay
+    }
     leaveOnlineRoom();
+    if (reason === 'reject') forgetGuestInvite();
+    showAlert(t(reason === 'reject' ? 'lobby.rejected' : 'owner.kicked'));
   });
 
   es.addEventListener('rtc_signal', (event) => {
@@ -1779,6 +1804,7 @@ function inviteLabel() {
 }
 
 function renderRoomTools() {
+  renderLobby();
   if (!els.copyInviteBtn.dataset.copied) els.copyInviteBtn.textContent = inviteLabel();
   const tools = els.roomTools;
   if (!tools) return;
@@ -1793,6 +1819,47 @@ function renderRoomTools() {
   els.videoReceiveBtn.textContent = receiving ? t('video.receiveOff') : t('video.receiveOn');
   els.videoReceiveBtn.classList.toggle('active', !receiving);
   els.videoReceiveBtn.disabled = !state.videoMesh;
+}
+
+// Kapida beklerken yazma ve dosya gonderme kapali
+function setWaitingInputs(waiting) {
+  els.textInput.disabled = waiting;
+  const send = document.querySelector('#textTranslateForm .send-btn');
+  if (send) send.disabled = waiting;
+  const attach = document.getElementById('attachBtn');
+  if (attach) attach.disabled = waiting;
+}
+
+// Oda sahibi: kapida bekleyenler icin "Kabul et" / "Reddet"
+function renderLobby() {
+  const bar = document.getElementById('lobbyBar');
+  if (!bar) return;
+  const list = state.roomCode && state.ownerId === state.clientId ? state.lobby : [];
+  const sig = `${t('lobby.accept')}|${list.map((p) => p.clientId + p.name).join(',')}`;
+  bar.classList.toggle('hidden', !list.length);
+  if (bar.dataset.sig === sig) return;
+  bar.dataset.sig = sig;
+  bar.replaceChildren(
+    ...list.map((p) => {
+      const row = document.createElement('div');
+      row.className = 'lobby-item';
+      const text = document.createElement('span');
+      text.className = 'lobby-text';
+      text.textContent = t('lobby.waiting', { name: censor(p.name || '?', state.myLang) });
+      const ok = document.createElement('button');
+      ok.type = 'button';
+      ok.className = 'online-btn primary';
+      ok.textContent = t('lobby.accept');
+      ok.addEventListener('click', () => window.CeviriRelay && window.CeviriRelay.approve(state.roomCode, p.clientId));
+      const no = document.createElement('button');
+      no.type = 'button';
+      no.className = 'online-btn secondary';
+      no.textContent = t('lobby.reject');
+      no.addEventListener('click', () => window.CeviriRelay && window.CeviriRelay.reject(state.roomCode, p.clientId));
+      row.append(text, ok, no);
+      return row;
+    })
+  );
 }
 
 function kickParticipant(clientId) {
@@ -1999,6 +2066,9 @@ function leaveOnlineRoom() {
   state.ownerId = null;
   state.roomLocked = false;
   state.holderSince = 0;
+  state.lobby = [];
+  state.awaitingApproval = false;
+  setWaitingInputs(false);
   renderParticipants();
   if (state.eventSource) {
     state.eventSource.close();

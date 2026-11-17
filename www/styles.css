@@ -1977,3 +1977,40 @@ html.guest-mode #inviteLinkInput {
   line-height: 1.45;
   color: var(--warn);
 }
+
+/* Kapida bekleyenler (yalnizca oda sahibi gorur) */
+.lobby-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-basis: 100%;
+}
+.lobby-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  background: rgba(250, 204, 21, 0.08);
+}
+.lobby-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lobby-item .online-btn {
+  flex-shrink: 0;
+}
+@media (min-width: 700px) and (orientation: landscape) {
+  body.in-room .online-active-row {
+    flex-wrap: wrap;
+  }
+  body.in-room .lobby-bar {
+    order: 7;
+  }
+}

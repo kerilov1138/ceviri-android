@@ -34,7 +34,7 @@ function openRoom(dev, code, clientId, name, lang, token) {
   const events = [];
   const tk = token ? `&token=${encodeURIComponent(token)}` : '';
   const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}${tk}`);
-  for (const t of ['room_state', 'history', 'chat_message']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
+  for (const t of ['room_state', 'history', 'chat_message', 'kicked']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
 const post = async (dev, path, body) => { const r = await dev.fetch(path, { method: 'POST', body: JSON.stringify(body) }); return { status: r.status, data: await r.json() }; };
@@ -46,7 +46,8 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   const guestA = makeDevice(brokers, false);
   const guestB = makeDevice(brokers, false);
   const guestC = makeDevice(brokers, false);
-  for (const d of [host, guestA, guestB, guestC]) await d.fetch('/api/online-info');
+  const guestD = makeDevice(brokers, false);
+  for (const d of [host, guestA, guestB, guestC, guestD]) await d.fetch('/api/online-info');
   await sleep(600);
 
   // Misafir oda kuramaz
@@ -63,13 +64,23 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   await sleep(300);
   await post(host, `/api/rooms/${roomCode}/message`, { clientId: 'idHost', text: 'gizli gecmis', sourceLang: 'tr-TR' });
 
-  // Linki ilk kullanan girer
+  // Linki ilk kullanan kapida bekler; oda sahibi kabul edince girer
   const A = openRoom(guestA, roomCode, 'idA', 'Anna', 'en-US', token);
   await sleep(1500);
+  assert.equal(A.last('room_state').data.invite, 'waiting', 'kapida bekliyor');
+  assert.deepEqual(A.last('room_state').data.participants.map((p) => p.clientId), ['idA'], 'bekleyen iceridekileri gormez');
+  assert.deepEqual(H.last('room_state').data.lobby.map((p) => p.name), ['Anna'], 'oda sahibi bekleyeni gorur');
+  assert.equal(H.last('room_state').data.participants.length, 1, 'onaysiz iceride sayilmaz');
+  assert.ok(!A.events.some((e) => e.type === 'history' && (e.data.messages || []).length), 'onaysiz gecmisi goremez');
+  const early = await post(guestA, `/api/rooms/${roomCode}/message`, { clientId: 'idA', text: 'erken', sourceLang: 'en-US' });
+  assert.equal(early.status, 403, 'onaysiz mesaj gonderemez');
+  assert.equal(host.CeviriRelay.approve(roomCode, 'idA'), true);
+  await sleep(1200);
   assert.equal(A.last('room_state').data.invite, 'ok');
+  assert.equal(H.last('room_state').data.lobby.length, 0);
   assert.equal(H.last('room_state').data.participants.length, 2, 'ev sahibi misafiri gorur');
   assert.ok(A.events.some((e) => e.type === 'history' && (e.data.messages || []).some((m) => m.originalText === 'gizli gecmis')), 'kabul edilen gecmisi alir');
-  console.log('ok linki ilk kullanan girer');
+  console.log('ok linki ilk kullanan kapida bekler, kabul edilince girer');
 
   // Ayni link baskasina iletildi: girmez, hicbir sey goremez
   const B = openRoom(guestB, roomCode, 'idB', 'Bob', 'de-DE', token);
@@ -93,6 +104,20 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   assert.ok(!H.last('room_state').data.participants.some((p) => p.clientId === 'idC'));
   C.es.close();
   console.log('ok gecersiz link reddedilir');
+
+  // Oda sahibi geri cevirir
+  const token2 = host.CeviriRelay.createInvite(roomCode);
+  await sleep(300);
+  const D = openRoom(guestD, roomCode, 'idD', 'Dan', 'it-IT', token2);
+  await sleep(1500);
+  assert.equal(D.last('room_state').data.invite, 'waiting');
+  assert.equal(host.CeviriRelay.reject(roomCode, 'idD'), true);
+  await sleep(800);
+  const kickedEv = D.events.filter((e) => e.type === 'kicked');
+  assert.equal(kickedEv.length, 1); assert.equal(kickedEv[0].data.reason, 'reject');
+  assert.equal(H.last('room_state').data.lobby.length, 0);
+  D.es.close();
+  console.log('ok oda sahibi geri cevirir');
 
   // Ilk misafir sayfayi yenileyip ayni linkle donebilir (ayni cihaz)
   A.es.close(); await sleep(400);

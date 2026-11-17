@@ -71,10 +71,11 @@
           <label for="onlineNameInput" class="lang-label" data-i18n="online.nameLabel">ADINIZ</label>
           <input id="onlineNameInput" type="text" class="online-input" placeholder="Örn: Ahmet" data-i18n-attr="placeholder:online.namePh" maxlength="32" />
         </div>
-        <div class="online-field small">
+        <div id="onlineRoomField" class="online-field small">
           <label for="onlineRoomInput" class="lang-label" data-i18n="online.roomLabel">ODA KODU (KATILMAK İÇİN)</label>
           <input id="onlineRoomInput" type="text" class="online-input mono" placeholder="Örn: K7M3P9" data-i18n-attr="placeholder:online.roomPh" maxlength="12" />
         </div>
+        <p id="inviteRequiredNote" class="invite-note hidden" data-i18n="invite.required">Bu sayfa yalnızca davet linkiyle açılır.</p>
         <div class="online-btn-group">
           <button id="joinRoomBtn" type="button" class="online-btn secondary" data-i18n="online.join">Odaya Katıl</button>
           <button id="createRoomBtn" type="button" class="online-btn primary" data-i18n="online.create">Yeni Oda Oluştur</button>

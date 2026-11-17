@@ -1961,3 +1961,19 @@ html:not(.guest-mode) body.in-room .mode-menu-btn {
 body.in-room .mode-switch {
   display: none !important;
 }
+
+/* Linkle acilan misafir sayfasi: oda kuramaz, oda kodunu gormez, davet uretemez */
+html.guest-mode #createRoomBtn,
+html.guest-mode #onlineRoomField,
+html.guest-mode .online-pill-live,
+html.guest-mode #copyInviteBtn,
+html.guest-mode #inviteLinkInput {
+  display: none !important;
+}
+.invite-note {
+  margin: 0;
+  flex: 1 1 100%;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--warn);
+}

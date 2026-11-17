@@ -29,7 +29,9 @@
   var PARTICIPANT_TTL_MS = 25000;
   var HISTORY_LIMIT = 50;
   var MAX_PARTICIPANTS = 6;
-  var COLOR_COUNT = 6; // sari, kirmizi, lacivert, gri, koyu yesil, pembe // odada en fazla 6 kisi
+  var COLOR_COUNT = 6; // sari, kirmizi, lacivert, gri, koyu yesil, pembe
+  var INVITE_LIMIT = 200; // saklanan davet sayisi
+  var INVITE_VERDICT_MS = 5000; // gecersiz link karari icin bekleme // odada en fazla 6 kisi
   var GROUP_MIN = 3; // 3+ kisi: soz sirasi (bas-konus), cevirmeyi her alici yapar
   var ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -50,6 +52,22 @@
     var b = new Uint8Array(8);
     crypto.getRandomValues(b);
     return Array.prototype.map.call(b, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  }
+
+  // Uygulama (APK / bilgisayar surumu) mi, linkle acilan misafir sayfasi mi?
+  function isAppClient() {
+    var cap = window.Capacitor;
+    return Boolean(cap && cap.isNativePlatform && cap.isNativePlatform()) || Boolean(window.CEVIRI_DESKTOP);
+  }
+
+  function randomToken() {
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    return b64(b).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function sha256hex(str) {
+    return crypto.subtle.digest('SHA-256', enc.encode(String(str))).then(toHex);
   }
 
   function toHex(buf) {
@@ -213,6 +231,13 @@
     this.inFiles = new Map(); // gelen dosyalar: id -> { meta, parts, got, blob, ... }
     this.fileMetas = []; // odadaki dosyalarin listesi (gec gelenlere gecmis olarak gider)
     this.fileTimer = null;
+    // Tek kullanimlik davet linkleri: odadakiler gecerli davetlerin OZETINI
+    // bilir (anahtarin kendisini degil); linki ilk kullanan kisiye baglanir
+    this.invites = new Set(); // davet anahtari SHA-256 ozetleri
+    this.bindings = new Map(); // ozet -> { id: ilk kullananin clientId, at }
+    this.joinStartedAt = 0;
+    this.heardApp = false;
+    this.loadInviteState();
     var self = this;
     this.ready = deriveRoomSecrets(code).then(function (s) {
       self.secrets = s;
@@ -221,7 +246,109 @@
     });
   }
 
+  RoomSession.prototype.inviteKey = function () {
+    return 'ceviri_inv_' + this.code;
+  };
+
+  RoomSession.prototype.loadInviteState = function () {
+    try {
+      var raw = window.localStorage && window.localStorage.getItem(this.inviteKey());
+      if (!raw) return;
+      var data = JSON.parse(raw);
+      var self = this;
+      (data.invites || []).forEach(function (h) { if (typeof h === 'string') self.invites.add(h); });
+      (data.bindings || []).forEach(function (b) {
+        if (Array.isArray(b) && typeof b[0] === 'string' && typeof b[1] === 'string') self.bindings.set(b[0], { id: b[1], at: Number(b[2]) || 0 });
+      });
+    } catch (e) {
+      // bozuk kayit: yoksay
+    }
+  };
+
+  RoomSession.prototype.saveInviteState = function () {
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(this.inviteKey(), JSON.stringify({
+        invites: Array.from(this.invites).slice(-INVITE_LIMIT),
+        bindings: this.bindingList(),
+      }));
+    } catch (e) {
+      // depolama yok
+    }
+  };
+
+  RoomSession.prototype.bindingList = function () {
+    var out = [];
+    this.bindings.forEach(function (v, h) { out.push([h, v.id, v.at]); });
+    return out.slice(-INVITE_LIMIT);
+  };
+
+  // Linki ilk kullanan kazanir; ayni anda gelenlerde once katilan
+  RoomSession.prototype.bindInvite = function (hash, id, at) {
+    if (!this.invites.has(hash)) return false;
+    var cur = this.bindings.get(hash);
+    if (cur && (cur.id === id || cur.at < at || (cur.at === at && cur.id < id))) return false;
+    this.bindings.set(hash, { id: id, at: at });
+    this.saveInviteState();
+    return true;
+  };
+
+  // Odaya kabul: uygulama kullanicisi ya da gecerli davet linkinin ilk sahibi
+  RoomSession.prototype.isAdmitted = function (p) {
+    if (!p) return false;
+    if (p.app) return true;
+    var b = p.tokenHash ? this.bindings.get(p.tokenHash) : null;
+    return Boolean(b && b.id === p.clientId);
+  };
+
+  // Misafir icin davet durumu: ok | pending | used | invalid
+  RoomSession.prototype.inviteStatus = function () {
+    var me = this.self;
+    if (!me || me.app) return 'ok';
+    if (!me.tokenHash) return me.tokenPending ? 'pending' : 'invalid';
+    var b = this.bindings.get(me.tokenHash);
+    if (b) return b.id === me.clientId ? 'ok' : 'used';
+    if (this.heardApp && Date.now() - this.joinStartedAt > INVITE_VERDICT_MS && !this.invites.has(me.tokenHash)) return 'invalid';
+    return 'pending';
+  };
+
+  /** Uygulama kullanicisi: yeni tek kullanimlik davet anahtari uretir. */
+  RoomSession.prototype.createInvite = function () {
+    var token = randomToken();
+    var self = this;
+    sha256hex(token).then(function (h) {
+      self.invites.add(h);
+      self.saveInviteState();
+      if (self.self) self.send({ type: 'invite', h: h });
+    });
+    return token;
+  };
+
+  RoomSession.prototype.absorbInvites = function (msg) {
+    var self = this;
+    var changed = false;
+    if (Array.isArray(msg.invites)) {
+      msg.invites.slice(-INVITE_LIMIT).forEach(function (h) {
+        if (typeof h === 'string' && h.length === 64 && !self.invites.has(h)) {
+          self.invites.add(h);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(msg.bindings)) {
+      msg.bindings.slice(-INVITE_LIMIT).forEach(function (b) {
+        if (Array.isArray(b) && typeof b[0] === 'string' && typeof b[1] === 'string') {
+          if (self.bindInvite(b[0], b[1], Number(b[2]) || 0)) changed = true;
+        }
+      });
+    }
+    if (changed) this.saveInviteState();
+  };
+
   RoomSession.prototype.send = async function (payload) {
+    // Odaya kabul edilmeyen (or. baskasinin linkiyle gelen) hicbir sey gonderemez
+    var t = payload.type;
+    if (t !== 'hello' && t !== 'presence' && t !== 'leave' && !this.selfAdmitted()) return 0;
     // Gonderen bilgisi beklemeden once alinir (leave() hemen self'i siler)
     payload.mid = randomId();
     payload.from = this.self ? this.self.clientId : '';
@@ -242,7 +369,17 @@
   // "aday" mesaji "teklif"ten once islenip kayboluyordu).
   RoomSession.prototype.onRaw = function (text) {
     var self = this;
-    var decrypted = open(this.secrets.key, text).catch(function () { return null; });
+    var decrypted = open(this.secrets.key, text)
+      .then(function (msg) {
+        if (msg && typeof msg.token === 'string' && msg.token) {
+          return sha256hex(msg.token.slice(0, 64)).then(function (h) {
+            msg.tokenHash = h;
+            return msg;
+          });
+        }
+        return msg;
+      })
+      .catch(function () { return null; });
     this.rawChain = (this.rawChain || Promise.resolve()).then(function () {
       return decrypted.then(function (msg) {
         if (!msg || !msg.mid || transport.isDuplicate(msg.mid)) return;
@@ -256,7 +393,13 @@
     var now = Date.now();
     if (msg.type === 'presence' || msg.type === 'hello') {
       if (this.kicked.has(msg.from)) return; // cikarilan kisi geri gelemez
-      this.absorbRoomRules(msg);
+      if (msg.app === true) this.heardApp = true;
+      // Oda kurallari ve davet bilgisi yalnizca odaya kabul edilmis kisilerden alinir
+      var known = this.participants.get(msg.from);
+      if (msg.app === true || this.isAdmitted(known)) {
+        this.absorbRoomRules(msg);
+        this.absorbInvites(msg);
+      }
       if (this.self && this.kicked.has(this.self.clientId)) return;
       var isNew = !this.participants.has(msg.from);
       var prev = this.participants.get(msg.from);
@@ -269,8 +412,13 @@
         hand: typeof msg.handTs === 'number' ? msg.handTs : prev ? prev.hand : 0,
         cam: typeof msg.cam === 'boolean' ? msg.cam : prev ? prev.cam : false,
         color: validColor(msg.color) ? msg.color : prev && validColor(prev.color) ? prev.color : -1,
+        app: msg.app === true,
+        tokenHash: typeof msg.tokenHash === 'string' ? msg.tokenHash : prev ? prev.tokenHash : '',
       });
-      if (msg.micActive) {
+      var rec = this.participants.get(msg.from);
+      if (!rec.app && rec.tokenHash && !this.bindings.has(rec.tokenHash)) this.bindInvite(rec.tokenHash, rec.clientId, rec.joinedAt);
+      var admitted = this.isAdmitted(rec);
+      if (msg.micActive && admitted) {
         this.applyRemoteMic(msg.from, true, msg.micTs || msg.ts);
       } else if (this.activeMic && this.activeMic.clientId === msg.from) {
         this.activeMic = null;
@@ -278,7 +426,7 @@
       if (isNew || msg.type === 'hello') {
         // Yeni gelene kendimizi ve gecmisi hemen bildir
         this.sendPresence('presence');
-        var canSee = !this.locked || this.allowed.has(msg.from);
+        var canSee = admitted && this.selfAdmitted() && (!this.locked || this.allowed.has(msg.from));
         if (canSee && (this.messages.length || this.fileMetas.length)) {
           this.send({ type: 'history', messages: this.messages.slice(-HISTORY_LIMIT), files: this.fileMetas.slice(-FILE_HISTORY_LIMIT) });
         }
@@ -309,7 +457,20 @@
       return;
     }
 
+    if (msg.type === 'invite') {
+      var inviter = this.participants.get(msg.from);
+      if (inviter && inviter.app && typeof msg.h === 'string' && msg.h.length === 64) {
+        this.invites.add(msg.h);
+        this.saveInviteState();
+        this.broadcastState();
+      }
+      return;
+    }
+
     if (this.kicked.has(msg.from)) return;
+    // Odaya kabul edilmemis kisinin (or. baskasindan gelen linkle girmeye
+    // calisan) mesajlari yok sayilir; ben kabul edilmediysem de hicbir sey almam
+    if (msg.type !== 'leave' && (!this.isAdmitted(this.participants.get(msg.from)) || !this.selfAdmitted())) return;
     // Kilitli odada izinli listesinde olmayanin mesajlari yok sayilir
     if (this.locked && !this.allowed.has(msg.from) && msg.type !== 'leave') return;
 
@@ -432,6 +593,10 @@
       locked: this.locked,
       allowed: this.locked ? Array.from(this.allowed) : [],
       kicked: Array.from(this.kicked).slice(-50),
+      app: Boolean(this.self.app),
+      token: this.self.token || undefined,
+      invites: Array.from(this.invites).slice(-INVITE_LIMIT),
+      bindings: this.bindingList(),
     });
   };
 
@@ -462,11 +627,22 @@
     return list;
   };
 
+  RoomSession.prototype.selfAdmitted = function () {
+    return this.inviteStatus() === 'ok';
+  };
+
   RoomSession.prototype.participantList = function () {
     var self = this;
+    var selfId = this.self ? this.self.clientId : null;
     return this.allSorted()
       .filter(function (p) {
         if (self.kicked.has(p.clientId)) return false;
+        // Kabul bekleyen kendim listede gorunurum; digerleri kabul edilmeli
+        if (p.clientId === selfId) {
+          if (self.inviteStatus() === 'used' || self.inviteStatus() === 'invalid') return false;
+        } else if (!self.isAdmitted(self.participants.get(p.clientId))) {
+          return false;
+        }
         if (self.locked && !self.allowed.has(p.clientId)) return false;
         return true;
       })
@@ -561,7 +737,8 @@
     var memberIds = members.map(function (m) { return m.clientId; });
     var selfId = this.self ? this.self.clientId : null;
     var lockedOut = Boolean(selfId) && this.locked && !this.allowed.has(selfId);
-    var full = Boolean(selfId) && memberIds.indexOf(selfId) < 0 && !lockedOut && !this.kicked.has(selfId);
+    var inviteState = this.inviteStatus();
+    var full = Boolean(selfId) && memberIds.indexOf(selfId) < 0 && !lockedOut && !this.kicked.has(selfId) && inviteState !== 'used' && inviteState !== 'invalid';
     var group = members.length >= GROUP_MIN;
     if (this.activeMic && memberIds.indexOf(this.activeMic.clientId) < 0) this.activeMic = null;
 
@@ -596,6 +773,7 @@
       queue: queue.map(function (q) { return q.clientId; }),
       full: full,
       lockedOut: lockedOut,
+      invite: inviteState,
       locked: this.locked,
       ownerId: this.ownerId(),
       maxParticipants: MAX_PARTICIPANTS,
@@ -623,17 +801,32 @@
     }
   };
 
-  RoomSession.prototype.join = function (sink, clientId, name, lang) {
+  RoomSession.prototype.join = function (sink, clientId, name, lang, token) {
     var self = this;
     this.sink = sink;
+    this.joinStartedAt = Date.now();
     // Kisa kopma (yeniden baglanma) sirayi/sahipligi korur; gercekten ayrilip
     // sonra donen kisi en sona eklenir (sahiplik siradakinde kalir)
     var resume = this.lastSelf && this.lastSelf.clientId === clientId && Date.now() - (this.lastLeftAt || 0) < 20000;
     var keepJoined = resume ? this.lastSelf.joinedAt : Date.now();
     var keepCam = resume ? Boolean(this.lastSelf.cam) : false;
     var keepColor = resume && typeof this.lastSelf.color === 'number' ? this.lastSelf.color : -1;
-    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam, color: keepColor };
+    var app = isAppClient();
+    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam, color: keepColor, app: app, token: app ? '' : String(token || '').slice(0, 64), tokenHash: '', tokenPending: !app && Boolean(token) };
     this.participants.set(clientId, this.self);
+    if (!app) {
+      // Misafir: gecersiz link karari icin sure dolunca durumu yeniden degerlendir
+      clearTimeout(this.verdictTimer);
+      this.verdictTimer = setTimeout(function () { self.broadcastState(); }, INVITE_VERDICT_MS + 200);
+    }
+    if (this.self.tokenPending) {
+      var me = this.self;
+      sha256hex(me.token).then(function (h) {
+        me.tokenHash = h;
+        me.tokenPending = false;
+        self.broadcastState();
+      });
+    }
     sink._emit('history', { messages: this.messages.slice() });
     this.fileMetas.forEach(function (meta) { sink._emit('file_message', self.fileStatus(meta)); });
     this.broadcastState();
@@ -923,6 +1116,7 @@
     var clientId = (u.searchParams.get('clientId') || '').trim().slice(0, 64);
     var name = (u.searchParams.get('name') || 'Misafir').trim().slice(0, 40) || 'Misafir';
     var lang = (u.searchParams.get('lang') || 'tr-TR').trim().slice(0, 16);
+    var token = (u.searchParams.get('token') || '').trim().slice(0, 64);
     var self = this;
     this._room = getRoom(code);
     this._statusFn = function () {
@@ -934,7 +1128,7 @@
       if (self.readyState === 2) return;
       self.readyState = 1;
       if (typeof self.onopen === 'function') self.onopen({});
-      self._room.join(self, clientId, name, lang);
+      self._room.join(self, clientId, name, lang, token);
     }, 0);
   }
 
@@ -980,10 +1174,16 @@
     try { body = init && init.body ? JSON.parse(init.body) : {}; } catch (e) { return json(400, { error: 'Invalid JSON body' }); }
 
     if (path === '/api/rooms') {
+      // Linkle acilan misafir sayfasi oda kuramaz
+      if (!isAppClient()) return json(403, { error: 'Oda yalnizca uygulamadan kurulabilir' });
       transport.start();
       var requested = sanitizeRoomCode(body.roomCode);
       return json(200, { roomCode: requested.length >= 4 ? requested : generateRoomCode() });
     }
+
+    var act = path.match(/^\/api\/rooms\/([A-Za-z0-9-]+)\/(mic|hand|message)$/);
+    var actRoom = act ? rooms[sanitizeRoomCode(act[1])] : null;
+    if (actRoom && actRoom.self && !actRoom.selfAdmitted()) return json(403, { error: 'Davet gecerli degil' });
 
     var mic = path.match(/^\/api\/rooms\/([A-Za-z0-9-]+)\/mic$/);
     if (mic) {
@@ -1130,6 +1330,11 @@
       return room.send({ type: 'rtc', to: String(to), data: data });
     },
     MAX_PARTICIPANTS: MAX_PARTICIPANTS,
+    /** Uygulama: yeni tek kullanimlik davet anahtari */
+    createInvite: function (code) {
+      if (!isAppClient()) return '';
+      return getRoom(sanitizeRoomCode(code)).createInvite();
+    },
     /** Oda sahibi: kisiyi cikar */
     kick: function (code, target) {
       var room = rooms[sanitizeRoomCode(code)];

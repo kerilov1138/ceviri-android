@@ -16,6 +16,75 @@ const IS_DESKTOP = !IS_NATIVE_APP && Boolean(window.CEVIRI_DESKTOP);
 const IS_GUEST = !IS_NATIVE_APP && !IS_DESKTOP;
 if (IS_GUEST) document.documentElement.classList.add('guest-mode');
 
+// ---------------------------------------------------------------------------
+// Tek kullanimlik davet linki: .../#j=<kodlanmis oda + davet anahtari>
+// Misafir oda kodunu gormez; link adres cubugundan hemen silinir.
+// ---------------------------------------------------------------------------
+const INVITE_SESSION_KEY = 'ceviri_invite';
+
+function encodeInvite(code, token) {
+  return btoa(`${code}.${token}`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeInvite(str) {
+  try {
+    const raw = atob(String(str).replace(/-/g, '+').replace(/_/g, '/'));
+    const i = raw.indexOf('.');
+    if (i < 0) return null;
+    const code = raw.slice(0, i).toUpperCase().replace(/[^A-Z0-9-]/g, '');
+    const token = raw.slice(i + 1).replace(/[^A-Za-z0-9_-]/g, '');
+    return code.length >= 4 && token.length >= 16 ? { code, token } : null;
+  } catch {
+    return null;
+  }
+}
+
+function readGuestInvite() {
+  if (!IS_GUEST) return null;
+  let invite = null;
+  const m = window.location.hash.match(/[#&]j=([A-Za-z0-9_-]+)/);
+  if (m) invite = decodeInvite(m[1]);
+  const params = new URLSearchParams(window.location.search);
+  // Linki adres cubugundan sil (kopyalanip baskasina iletilemesin, oda kodu gorunmesin)
+  if (m || params.has('room')) {
+    params.delete('room');
+    const q = params.toString();
+    try {
+      window.history.replaceState(null, '', window.location.pathname + (q ? `?${q}` : ''));
+    } catch {
+      // yoksay
+    }
+  }
+  try {
+    if (invite) sessionStorage.setItem(INVITE_SESSION_KEY, JSON.stringify(invite));
+    else invite = JSON.parse(sessionStorage.getItem(INVITE_SESSION_KEY) || 'null');
+  } catch {
+    // depolama yok
+  }
+  return invite && invite.code && invite.token ? invite : null;
+}
+
+let guestInvite = readGuestInvite();
+
+function forgetGuestInvite() {
+  guestInvite = null;
+  try {
+    sessionStorage.removeItem(INVITE_SESSION_KEY);
+  } catch {
+    // yoksay
+  }
+  updateGuestJoinView();
+}
+
+// Misafir: davet linki yoksa katil dugmesi yerine aciklama gorunur
+function updateGuestJoinView() {
+  if (!IS_GUEST) return;
+  const note = document.getElementById('inviteRequiredNote');
+  const join = document.getElementById('joinRoomBtn');
+  if (note) note.classList.toggle('hidden', Boolean(guestInvite));
+  if (join) join.classList.toggle('hidden', !guestInvite);
+}
+
 let cameraCtl = null; // kamera sekmesi (yalnizca uygulamada)
 
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -28,6 +97,22 @@ const STORAGE_KEYS = {
 };
 
 function getTabClientId() {
+  // Misafir: ayni davet linkiyle ayni cihazdan her donuste ayni kimlik
+  // (sekme kapanip link yeniden acilsa da girer; linkin iletildigi baska cihaz giremez)
+  if (IS_GUEST && guestInvite) {
+    const key = `ceviri_guest_${guestInvite.token.slice(0, 16)}`;
+    try {
+      let gid = localStorage.getItem(key);
+      if (!gid) {
+        gid = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        localStorage.setItem(key, gid);
+      }
+      sessionStorage.setItem('ceviri_client_id', gid);
+      return gid;
+    } catch {
+      // depolama yoksa sekme kimligi kullanilir
+    }
+  }
   let id = sessionStorage.getItem('ceviri_client_id');
   if (!id) {
     id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`);
@@ -1096,10 +1181,15 @@ async function copyText(text) {
   }
 }
 
-function updateInviteLink() {
-  if (!state.roomCode) return;
-  const inviteUrl = `${getShareBaseUrl()}/?room=${encodeURIComponent(state.roomCode)}`;
-  els.inviteLinkInput.value = inviteUrl;
+// Uygulama: her davet linki tek kullanimliktir (ilk acan kisiye baglanir)
+function updateInviteLink(fresh) {
+  if (!state.roomCode || IS_GUEST || !window.CeviriRelay) return;
+  if (fresh || !state.inviteToken || state.inviteTokenRoom !== state.roomCode) {
+    state.inviteToken = window.CeviriRelay.createInvite(state.roomCode);
+    state.inviteTokenRoom = state.roomCode;
+  }
+  if (!state.inviteToken) return;
+  els.inviteLinkInput.value = `${getShareBaseUrl()}/#j=${encodeInvite(state.roomCode, state.inviteToken)}`;
 }
 
 async function pollOnlineInfo() {
@@ -1150,7 +1240,8 @@ function connectToRoom(roomCode) {
   }
 
   state.roomCode = roomCode;
-  els.roomCodeBadge.textContent = roomCode;
+  // Linkle gelen misafir oda kodunu gormez
+  els.roomCodeBadge.textContent = IS_GUEST ? '' : roomCode;
   // Kamera baglantilari: ayni odada dil degisince (yeniden baglanma) korunur
   if (state.videoMesh && state.videoMesh.roomCode !== roomCode) {
     state.videoMesh.destroy();
@@ -1183,6 +1274,7 @@ function connectToRoom(roomCode) {
     name: state.myName || t('who.me'),
     lang: state.myLang,
   });
+  if (IS_GUEST && guestInvite && guestInvite.code === roomCode) params.set('token', guestInvite.token);
 
   const es = new EventSource(`/api/rooms/${encodeURIComponent(roomCode)}/events?${params.toString()}`);
   state.eventSource = es;
@@ -1210,6 +1302,13 @@ function connectToRoom(roomCode) {
     if (data.lockedOut) {
       showAlert(t('room.lockedOut'));
       leaveOnlineRoom();
+      return;
+    }
+    if (data.invite === 'used' || data.invite === 'invalid') {
+      // Bu link baska biri tarafindan kullanildi ya da gecersiz: hicbir sey gosterilmez
+      leaveOnlineRoom();
+      forgetGuestInvite();
+      showAlert(t(data.invite === 'used' ? 'invite.used' : 'invite.invalid'));
       return;
     }
     // Oda 2 kisiden gruba gecerken mikrofonu tutan kisiye de 45 sn siniri baslar
@@ -1334,6 +1433,7 @@ function connectToRoom(roomCode) {
 }
 
 async function createOnlineRoom() {
+  if (IS_GUEST) return; // linkle acilan sayfa oda kuramaz
   const name = els.onlineNameInput.value.trim();
   if (!name) {
     showAlert(t('err.needName'));
@@ -1360,7 +1460,14 @@ async function createOnlineRoom() {
 
 function joinOnlineRoom() {
   const name = els.onlineNameInput.value.trim();
-  const code = els.onlineRoomInput.value.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+  if (IS_GUEST && !guestInvite) {
+    showAlert(t('invite.required'));
+    return;
+  }
+  // Misafir: oda kodu davet linkinden gelir (ekranda gorunmez)
+  const code = IS_GUEST
+    ? guestInvite.code
+    : els.onlineRoomInput.value.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
   if (!name) {
     showAlert(t('err.needName'));
     els.onlineNameInput.focus();
@@ -1968,7 +2075,8 @@ function bindEvents() {
   els.joinRoomBtn.addEventListener('click', joinOnlineRoom);
   els.leaveRoomBtn.addEventListener('click', leaveOnlineRoom);
   els.copyInviteBtn.addEventListener('click', async () => {
-    updateInviteLink();
+    // Her kopyalamada yeni, tek kisilik link
+    updateInviteLink(true);
     const link = els.inviteLinkInput.value;
     if (!link) return;
     if (await copyText(link)) {
@@ -2226,7 +2334,13 @@ function init() {
   const roomFromUrl = (urlParams.get('room') || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
   const modeFromUrl = urlParams.get('mode');
 
-  if (roomFromUrl) {
+  if (IS_GUEST) {
+    // Misafir: yalnizca davet linkiyle, adini yazip katilir
+    setMode('online');
+    updateGuestJoinView();
+    if (state.myName) els.onlineNameInput.value = state.myName;
+    if (guestInvite) els.onlineNameInput.focus();
+  } else if (roomFromUrl) {
     setMode('online');
     els.onlineRoomInput.value = roomFromUrl;
     if (state.myName) {

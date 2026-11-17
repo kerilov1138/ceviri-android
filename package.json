@@ -6,7 +6,7 @@
   "scripts": {
     "copy-core": "node scripts/copy-libs.js",
     "sync": "npm run copy-core && npx cap sync android",
-    "test": "npm run copy-core && node tests/profanity.test.mjs && node tests/shim.test.js && node tests/relay.test.js && node tests/group.test.js"
+    "test": "npm run copy-core && node tests/profanity.test.mjs && node tests/shim.test.js && node tests/relay.test.js && node tests/group.test.js && node tests/invite.test.js"
   },
   "dependencies": {
     "@capacitor-community/file-opener": "8.0.1",

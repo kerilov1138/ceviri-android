@@ -26,9 +26,9 @@ function makeDevice(name, brokers) {
   return g;
 }
 
-function openRoom(dev, code, clientId, name, lang) {
+function openRoom(dev, code, clientId, name, lang, creator) {
   const events = [];
-  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}`);
+  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}${creator ? '&creator=1' : ''}`);
   for (const t of ['room_state', 'history', 'chat_message', 'file_message', 'file_progress', 'file_ready', 'file_failed', 'rtc_signal']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
@@ -47,7 +47,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   // A creates room
   const { data: { roomCode } } = await post(A, '/api/rooms', {});
   assert.match(roomCode, /^[A-Z0-9]{8}$/); console.log('ok room', roomCode);
-  const ra = openRoom(A, roomCode, 'aaa', 'Ali', 'tr-TR');
+  const ra = openRoom(A, roomCode, 'aaa', 'Ali', 'tr-TR', true);
   await sleep(300);
   assert.deepEqual(ra.last('history').data.messages, []);
   assert.equal(ra.last('room_state').data.participants.length, 1);
@@ -59,7 +59,9 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   // B joins
   await sleep(1500);
   const rb = openRoom(B, roomCode, 'bbb', 'John', 'de-DE');
-  await sleep(800);
+  await sleep(500);
+  A.CeviriRelay.approve(roomCode, 'bbb'); // oda sahibi John'u kabul eder
+  await sleep(1000);
   const sa = ra.last('room_state').data, sb = rb.last('room_state').data;
   assert.equal(sa.participants.length, 2, 'A sees 2'); assert.equal(sb.participants.length, 2, 'B sees 2');
   assert.equal(sa.participants.find(p => p.clientId === 'bbb').lang, 'de-DE');
@@ -125,6 +127,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
     // Gec katilan D: gecmisten dosyayi gorur, dokununca (getFile) indirir
     const D = makeDevice('D', brokers); await D.fetch('/api/online-info'); await sleep(400);
     const rd = openRoom(D, roomCode, 'ddd', 'Deniz', 'tr-TR');
+  await sleep(500); A.CeviriRelay.approve(roomCode, 'ddd'); await sleep(300);
     const t1 = Date.now();
     while (!rd.events.some(e => e.type === 'file_message' && e.data.id === meta.id) && Date.now() - t1 < 5000) await sleep(100);
     const dm = rd.events.find(e => e.type === 'file_message' && e.data.id === meta.id);

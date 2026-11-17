@@ -33,6 +33,10 @@
   var INVITE_LIMIT = 200; // saklanan davet sayisi
   var INVITE_VERDICT_MS = 5000; // gecersiz link karari icin bekleme // odada en fazla 6 kisi
   var GROUP_MIN = 3; // 3+ kisi: soz sirasi (bas-konus), cevirmeyi her alici yapar
+  // Uctan uca sifrelenen (yalnizca kabul edilenlerin okuyabilecegi) mesaj turleri.
+  // Bunlarin disindakiler (presence/hello/leave/invite/approve/keyshare) el sikisma
+  // katmanidir ve oda kodundan turetilen anahtarla sarilir.
+  var CONTENT_TYPES = { chat: 1, history: 1, 'file-meta': 1, 'file-chunk': 1, 'file-req': 1, mic: 1, hand: 1, cam: 1, rtc: 1 };
   var ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
   function sanitizeRoomCode(raw) {
@@ -115,6 +119,38 @@
     var env = JSON.parse(text);
     if (!env || env.v !== 1) throw new Error('bad envelope');
     var pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(env.iv) }, key, unb64(env.ct));
+    return JSON.parse(dec.decode(pt));
+  }
+
+  // --- Uctan uca icerik anahtari: oda kodundan TURETILMEZ, oda sahibi uretir ve
+  // yalnizca kabul ettigi kisiye ECDH ile sarip gonderir. Linki ele geciren biri
+  // (kirilmis uygulamayla bile) bu anahtari alamaz, yani konusmalari okuyamaz. ---
+  function genEcdh() {
+    return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  }
+  function exportEcdhPub(pub) {
+    return crypto.subtle.exportKey('raw', pub).then(function (b) { return b64(b); });
+  }
+  function importEcdhPub(str) {
+    return crypto.subtle.importKey('raw', unb64(str), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  }
+  function ecdhSecretKey(priv, pub) {
+    return crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, priv, 256).then(function (bits) {
+      return crypto.subtle.importKey('raw', bits, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    });
+  }
+  function genContentKey() {
+    return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  }
+  function exportRawKey(key) { return crypto.subtle.exportKey('raw', key).then(function (b) { return b64(b); }); }
+  function importRawKey(str) { return crypto.subtle.importKey('raw', unb64(str), { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']); }
+  async function encBlob(key, obj) {
+    var iv = new Uint8Array(12); crypto.getRandomValues(iv);
+    var ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, enc.encode(JSON.stringify(obj)));
+    return { iv: b64(iv), ct: b64(ct) };
+  }
+  async function decBlob(key, ivB64, ctB64) {
+    var pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(ivB64) }, key, unb64(ctB64));
     return JSON.parse(dec.decode(pt));
   }
 
@@ -235,15 +271,27 @@
     // bilir (anahtarin kendisini degil); linki ilk kullanan kisiye baglanir
     this.invites = new Set(); // davet anahtari SHA-256 ozetleri
     this.bindings = new Map(); // ozet -> { id: ilk kullananin clientId, at }
-    this.approved = new Set(); // oda sahibinin "Kabul et" dedigi misafirler
+    this.approved = new Set(); // oda sahibinin "Kabul et" dedigi (oda sahibinde dogru)
     this.joinStartedAt = 0;
     this.heardApp = false;
+    this.contentKey = null; // uctan uca icerik anahtari (kabul edilince gelir)
+    this.ecdh = null; // { priv, pub, pubB64 } bu oturumun ECDH anahtar cifti
+    this.sharedPk = new Map(); // oda sahibi: clientId -> anahtari gonderdigimiz pk
+    this.ownerSynced = false; // oda sahibinin kabul listesini en az bir kez aldik mi
+    this._genningKey = false;
+    this.pendingEnc = []; // icerik anahtari gelmeden once gelen sifreli mesajlar
     this.loadInviteState();
     var self = this;
-    this.ready = deriveRoomSecrets(code).then(function (s) {
-      self.secrets = s;
-      transport.subscribe(s.topic, function (text) { self.onRaw(text); });
-      return s;
+    this.ready = Promise.all([
+      deriveRoomSecrets(code),
+      genEcdh().then(function (kp) {
+        return exportEcdhPub(kp.publicKey).then(function (pb) { return { priv: kp.privateKey, pub: kp.publicKey, pubB64: pb }; });
+      }),
+    ]).then(function (arr) {
+      self.secrets = arr[0];
+      self.ecdh = arr[1];
+      transport.subscribe(self.secrets.topic, function (text) { self.onRaw(text); });
+      return arr[0];
     });
   }
 
@@ -297,16 +345,73 @@
   };
 
   // Gecerli davet linkinin ilk sahibi mi (kapiya kadar gelebilir)
+  // Oda sahibi = en eski uygulama kullanicisi (yoksa en eski kisi). Kabul listesinin
+  // tek yetkili kaynagi budur; digerleri bunu aynalar.
+  RoomSession.prototype.authOwnerId = function () {
+    var bestApp = null, bestAny = null;
+    this.participants.forEach(function (p) {
+      if (!bestAny || p.joinedAt < bestAny.joinedAt || (p.joinedAt === bestAny.joinedAt && p.clientId < bestAny.clientId)) bestAny = p;
+      if (p.app && (!bestApp || p.joinedAt < bestApp.joinedAt || (p.joinedAt === bestApp.joinedAt && p.clientId < bestApp.clientId))) bestApp = p;
+    });
+    var best = bestApp || bestAny;
+    return best ? best.clientId : null;
+  };
+
+  // Odayi kuran icerik anahtarini uretir (yalnizca bir kez)
+  RoomSession.prototype.ensureContentKey = function () {
+    if (this.contentKey || this._genningKey) return;
+    if (!this.self || !this.self.creator) return;
+    var self = this;
+    this._genningKey = true;
+    genContentKey().then(function (k) { self.contentKey = k; self._genningKey = false; self.broadcastState(); })
+      .catch(function () { self._genningKey = false; });
+  };
+
+  // Icerik anahtari gelince, bekleyen sifreli mesajlari sirayla isle
+  RoomSession.prototype.drainPending = function () {
+    var self = this;
+    var pend = this.pendingEnc;
+    this.pendingEnc = [];
+    var chain = Promise.resolve();
+    pend.forEach(function (env) {
+      chain = chain.then(function () {
+        if (!self.contentKey || !env.mid || transport.isDuplicate(env.mid)) return;
+        if (!self.self || env.from === self.self.clientId) return;
+        return decBlob(self.contentKey, env.iv, env.ct).then(function (inner) {
+          inner.from = env.from; inner.mid = env.mid; inner.ts = env.ts;
+          return self.handle(inner);
+        }).catch(function () {});
+      });
+    });
+    return chain;
+  };
+
+  // Oda sahibi: kabul ettigi kisiye icerik anahtarini ECDH ile sarip gonderir
+  RoomSession.prototype.shareKeyTo = function (member) {
+    if (!this.contentKey || !this.ecdh || !member || !member.pk) return Promise.resolve();
+    if (member.clientId === (this.self && this.self.clientId)) return Promise.resolve();
+    if (this.sharedPk.get(member.clientId) === member.pk) return Promise.resolve();
+    var self = this;
+    var pkAtShare = member.pk;
+    this.sharedPk.set(member.clientId, member.pk);
+    return importEcdhPub(member.pk)
+      .then(function (pub) { return ecdhSecretKey(self.ecdh.priv, pub); })
+      .then(function (wrapKey) { return exportRawKey(self.contentKey).then(function (raw) { return encBlob(wrapKey, { k: raw }); }); })
+      .then(function (bl) { return self.send({ type: 'keyshare', to: member.clientId, epk: self.ecdh.pubB64, iv: bl.iv, ct: bl.ct }); })
+      .catch(function () { if (self.sharedPk.get(member.clientId) === pkAtShare) self.sharedPk.delete(member.clientId); });
+  };
+
   RoomSession.prototype.holdsInvite = function (p) {
     var b = p && p.tokenHash ? this.bindings.get(p.tokenHash) : null;
     return Boolean(b && b.id === p.clientId);
   };
 
-  // Odaya kabul: uygulama kullanicisi ya da linkin sahibi + oda sahibinin onayi
+  // Odaya kabul: odayi kuran kendiliginden; herkes (uygulama ya da link) oda sahibi onayindan gecer
   RoomSession.prototype.isAdmitted = function (p) {
     if (!p) return false;
-    if (p.app) return true;
-    return this.holdsInvite(p) && this.approved.has(p.clientId);
+    if (this.self && p.clientId === this.self.clientId && this.self.creator) return true;
+    if (!this.approved.has(p.clientId)) return false;
+    return p.app || this.holdsInvite(p);
   };
 
   // Kapida bekleyenler: gecerli linkle gelmis, henuz kabul edilmemis
@@ -316,28 +421,37 @@
     return this.allSorted().filter(function (p) {
       if (p.clientId === selfId || self.kicked.has(p.clientId)) return false;
       var rec = self.participants.get(p.clientId);
-      return Boolean(rec && !rec.app && self.holdsInvite(rec) && !self.approved.has(p.clientId));
+      if (!rec || self.approved.has(p.clientId)) return false;
+      // Kodla giren uygulama kullanicisi ya da gecerli davet linki sahibi kapida bekler
+      return rec.app ? true : self.holdsInvite(rec);
     });
   };
 
   /** Oda sahibi: kapida bekleyeni iceri alir. */
   RoomSession.prototype.approve = function (target) {
-    if (!this.self || !this.isOwner(this.self.clientId)) return false;
+    if (!this.self || this.authOwnerId() !== this.self.clientId) return false;
     if (!this.lobbyList().some(function (p) { return p.clientId === target; })) return false;
     this.approved.add(target);
+    this.sharedPk.delete(target);
     this.saveInviteState();
     this.send({ type: 'approve', target: target });
-    // Iceri alinan gecmisi de gorsun
-    if (this.messages.length || this.fileMetas.length) {
-      this.send({ type: 'history', messages: this.messages.slice(-HISTORY_LIMIT), files: this.fileMetas.slice(-FILE_HISTORY_LIMIT) });
-    }
+    var self = this;
+    var rec = this.participants.get(target);
+    // ONCE icerik anahtari gonderilir, SONRA gecmis (anahtarsiz gecmis okunamaz)
+    var shared = rec ? this.shareKeyTo(rec) : Promise.resolve();
+    shared.then(function () {
+      if (self.messages.length || self.fileMetas.length) {
+        self.send({ type: 'history', messages: self.messages.slice(-HISTORY_LIMIT), files: self.fileMetas.slice(-FILE_HISTORY_LIMIT) });
+      }
+    });
+    this.sendPresence('presence');
     this.broadcastState();
     return true;
   };
 
   /** Oda sahibi: kapida bekleyeni geri cevirir. */
   RoomSession.prototype.reject = function (target) {
-    if (!this.self || !this.isOwner(this.self.clientId) || target === this.self.clientId) return false;
+    if (!this.self || this.authOwnerId() !== this.self.clientId || target === this.self.clientId) return false;
     this.send({ type: 'kick', target: target, reason: 'reject' });
     this.applyKick(target);
     return true;
@@ -346,16 +460,28 @@
   // Misafir icin davet durumu: ok | pending | used | invalid
   RoomSession.prototype.inviteStatus = function () {
     var me = this.self;
-    if (!me || me.app) return 'ok';
-    if (!me.tokenHash) return me.tokenPending ? 'pending' : 'invalid';
-    var b = this.bindings.get(me.tokenHash);
-    if (b) return b.id !== me.clientId ? 'used' : this.approved.has(me.clientId) ? 'ok' : 'waiting';
-    if (this.heardApp && Date.now() - this.joinStartedAt > INVITE_VERDICT_MS && !this.invites.has(me.tokenHash)) return 'invalid';
-    return 'pending';
+    if (!me) return 'ok';
+    if (me.creator) return 'ok'; // odayi kuran
+    if (me.token) {
+      // Linkle gelen misafir: once davet gecerliligi
+      if (me.tokenPending) return 'pending';
+      if (!me.tokenHash) return 'invalid';
+      var b = this.bindings.get(me.tokenHash);
+      if (b && b.id !== me.clientId) return 'used';
+      if (!b) {
+        if (this.heardApp && Date.now() - this.joinStartedAt > INVITE_VERDICT_MS && !this.invites.has(me.tokenHash)) return 'invalid';
+        return 'pending';
+      }
+    }
+    // Gecerli davet sahibi ya da kodla giren uygulama kullanicisi: oda sahibi onayi beklenir
+    if (!this.ownerSynced) return 'waiting';
+    if (this.approved.has(me.clientId)) return 'ok';
+    return 'waiting';
   };
 
   /** Uygulama kullanicisi: yeni tek kullanimlik davet anahtari uretir. */
   RoomSession.prototype.createInvite = function () {
+    if (!this.self || this.authOwnerId() !== this.self.clientId) return '';
     var token = randomToken();
     var self = this;
     sha256hex(token).then(function (h) {
@@ -384,29 +510,31 @@
         }
       });
     }
-    if (Array.isArray(msg.approved)) {
-      msg.approved.slice(-INVITE_LIMIT).forEach(function (id) {
-        if (typeof id === 'string' && !self.approved.has(id)) {
-          self.approved.add(id);
-          changed = true;
-        }
-      });
-    }
     if (changed) this.saveInviteState();
   };
 
   RoomSession.prototype.send = async function (payload) {
     // Odaya kabul edilmeyen (or. baskasinin linkiyle gelen) hicbir sey gonderemez
     var t = payload.type;
-    if (t !== 'hello' && t !== 'presence' && t !== 'leave' && !this.selfAdmitted()) return 0;
+    var handshake = t === 'hello' || t === 'presence' || t === 'leave' || t === 'invite' || t === 'approve' || t === 'keyshare';
+    if (!handshake && !this.selfAdmitted()) return 0;
+    // Icerik mesaji icerik anahtari olmadan gonderilemez (henuz kabul edilmedik)
+    if (CONTENT_TYPES[t] && !this.contentKey) return 0;
     // Gonderen bilgisi beklemeden once alinir (leave() hemen self'i siler)
     payload.mid = randomId();
     payload.from = this.self ? this.self.clientId : '';
     payload.ts = Date.now();
     transport.isDuplicate(payload.mid); // kendi yankimizi yok say
-    // Gonderim sirasi korunur: sifreleme paralel olsa da yayin sirayla yapilir
     var self = this;
-    var sealed = this.ready.then(function (sec) { return seal(sec.key, payload); });
+    // Icerik mesajlari once icerik anahtariyla sarilir (sadece kabul edilenler cozer),
+    // sonra tum mesajlar oda kodu anahtariyla disardan sifrelenir (rastgele dinleyiciye karsi)
+    var inner = this.ready.then(function () {
+      if (!CONTENT_TYPES[t]) return payload;
+      return encBlob(self.contentKey, payload).then(function (bl) {
+        return { type: 'enc', mid: payload.mid, from: payload.from, ts: payload.ts, iv: bl.iv, ct: bl.ct };
+      });
+    });
+    var sealed = Promise.all([this.ready, inner]).then(function (a) { return seal(a[0].key, a[1]); });
     var publish = (this.sendChain || Promise.resolve()).then(function () {
       return sealed.then(function (text) { return transport.publish(self.secrets.topic, text); });
     });
@@ -420,21 +548,29 @@
   RoomSession.prototype.onRaw = function (text) {
     var self = this;
     var decrypted = open(this.secrets.key, text)
-      .then(function (msg) {
-        if (msg && typeof msg.token === 'string' && msg.token) {
-          return sha256hex(msg.token.slice(0, 64)).then(function (h) {
-            msg.tokenHash = h;
-            return msg;
-          });
+      .then(function (env) {
+        if (env && env.type === 'enc') {
+          // Icerik anahtarimiz henuz yoksa, gelince islemek uzere sakla (broker sirasi degisebilir)
+          if (!self.contentKey) {
+            if (self.pendingEnc.length < 300 && env.mid && env.from !== (self.self && self.self.clientId)) self.pendingEnc.push(env);
+            return null;
+          }
+          return decBlob(self.contentKey, env.iv, env.ct).then(function (inner) {
+            inner.from = env.from; inner.mid = env.mid; inner.ts = env.ts;
+            return inner;
+          }).catch(function () { return null; });
         }
-        return msg;
+        if (env && typeof env.token === 'string' && env.token) {
+          return sha256hex(env.token.slice(0, 64)).then(function (h) { env.tokenHash = h; return env; });
+        }
+        return env;
       })
       .catch(function () { return null; });
     this.rawChain = (this.rawChain || Promise.resolve()).then(function () {
       return decrypted.then(function (msg) {
         if (!msg || !msg.mid || transport.isDuplicate(msg.mid)) return;
         if (!self.self || msg.from === self.self.clientId) return;
-        self.handle(msg);
+        return self.handle(msg);
       });
     }).catch(function () {});
   };
@@ -444,9 +580,9 @@
     if (msg.type === 'presence' || msg.type === 'hello') {
       if (this.kicked.has(msg.from)) return; // cikarilan kisi geri gelemez
       if (msg.app === true) this.heardApp = true;
-      // Oda kurallari ve davet bilgisi yalnizca odaya kabul edilmis kisilerden alinir
+      // Oda kurallari ve davet bilgisi yalnizca kabul edilmis kisilerden ya da oda sahibinden alinir
       var known = this.participants.get(msg.from);
-      if (msg.app === true || this.isAdmitted(known)) {
+      if (this.isAdmitted(known) || msg.from === this.authOwnerId()) {
         this.absorbRoomRules(msg);
         this.absorbInvites(msg);
       }
@@ -463,9 +599,18 @@
         cam: typeof msg.cam === 'boolean' ? msg.cam : prev ? prev.cam : false,
         color: validColor(msg.color) ? msg.color : prev && validColor(prev.color) ? prev.color : -1,
         app: msg.app === true,
+        creator: msg.creator === true,
+        pk: typeof msg.pk === 'string' && msg.pk ? msg.pk : prev ? prev.pk : '',
         tokenHash: typeof msg.tokenHash === 'string' ? msg.tokenHash : prev ? prev.tokenHash : '',
       });
       var rec = this.participants.get(msg.from);
+      // Oda sahibinin (en eski uygulama kullanicisi) kabul listesini aynala:
+      // kimin iceride oldugu yalnizca oda sahibinin kararina gore belirlenir
+      var aOwner = this.authOwnerId();
+      if (aOwner && this.self && aOwner !== this.self.clientId && msg.from === aOwner && Array.isArray(msg.approved)) {
+        this.approved = new Set(msg.approved);
+        this.ownerSynced = true;
+      }
       if (!rec.app && rec.tokenHash && !this.bindings.has(rec.tokenHash)) this.bindInvite(rec.tokenHash, rec.clientId, rec.joinedAt);
       var admitted = this.isAdmitted(rec);
       if (msg.micActive && admitted) {
@@ -488,6 +633,13 @@
     if (msg.type === 'leave') {
       this.participants.delete(msg.from);
       if (this.activeMic && this.activeMic.clientId === msg.from) this.activeMic = null;
+      if (this.self && this.authOwnerId() === this.self.clientId) {
+        // Oda sahibi: ayrilan kisiyi kabul listesinden cikarir. Linkle gelen biri
+        // tekrar katilmak isterse yeniden "Kabul et" beklenir (bildirim yine gelir).
+        if (this.approved.delete(msg.from)) this.saveInviteState();
+        this.sharedPk.delete(msg.from);
+        this.sendPresence('presence');
+      }
       this.broadcastState();
       return;
     }
@@ -501,11 +653,27 @@
 
     if (msg.type === 'approve') {
       // Yalnizca oda sahibinin onayi gecerlidir (bekleyen kisinin kendisi de alir)
-      if (!this.isOwner(msg.from) || typeof msg.target !== 'string') return;
+      if (msg.from !== this.authOwnerId() || typeof msg.target !== 'string') return;
       this.approved.add(msg.target);
+      this.ownerSynced = true;
       this.saveInviteState();
       this.broadcastState();
       return;
+    }
+
+    if (msg.type === 'keyshare') {
+      // Oda sahibi, kabul ettigi kisiye icerik anahtarini ECDH ile sararak gonderir.
+      // Bir kez aldiktan sonra degismez; yalnizca oda sahibinden kabul edilir.
+      if (!this.self || msg.to !== this.self.clientId || this.contentKey) return;
+      if (!this.ecdh || typeof msg.epk !== 'string' || msg.from !== this.authOwnerId()) return;
+      var ksSelf = this;
+      return importEcdhPub(msg.epk).then(function (pub) { return ecdhSecretKey(ksSelf.ecdh.priv, pub); })
+        .then(function (wrapKey) { return decBlob(wrapKey, msg.iv, msg.ct); })
+        .then(function (obj) { return importRawKey(obj.k); })
+        .then(function (key) {
+          if (!ksSelf.contentKey) { ksSelf.contentKey = key; ksSelf.broadcastState(); return ksSelf.drainPending(); }
+        })
+        .catch(function () {});
     }
 
     if (msg.type === 'lock') {
@@ -638,6 +806,14 @@
 
   RoomSession.prototype.sendPresence = function (type) {
     if (!this.self) return Promise.resolve(0);
+    var self = this;
+    // ECDH acik anahtari hazir olana kadar bekle: presence her zaman pk tasisin
+    return this.ready.then(function () {
+      if (!self.self) return 0;
+      return self._sendPresence(type);
+    });
+  };
+  RoomSession.prototype._sendPresence = function (type) {
     var micActive = Boolean(this.activeMic && this.activeMic.clientId === this.self.clientId);
     return this.send({
       type: type || 'presence',
@@ -653,6 +829,8 @@
       allowed: this.locked ? Array.from(this.allowed) : [],
       kicked: Array.from(this.kicked).slice(-50),
       app: Boolean(this.self.app),
+      creator: Boolean(this.self.creator),
+      pk: this.ecdh ? this.ecdh.pubB64 : '',
       token: this.self.token || undefined,
       invites: Array.from(this.invites).slice(-INVITE_LIMIT),
       bindings: this.bindingList(),
@@ -669,6 +847,10 @@
       if (now - p.lastSeen > PARTICIPANT_TTL_MS) {
         self.participants.delete(id);
         if (self.activeMic && self.activeMic.clientId === id) self.activeMic = null;
+        if (self.authOwnerId() === (self.self && self.self.clientId)) {
+          if (self.approved.delete(id)) self.saveInviteState();
+          self.sharedPk.delete(id);
+        }
         changed = true;
       }
     });
@@ -742,12 +924,15 @@
   RoomSession.prototype.applyKick = function (target, silent, reason) {
     this.kicked.add(target);
     this.allowed.delete(target);
+    this.approved.delete(target);
+    this.sharedPk.delete(target);
     this.participants.delete(target);
     if (this.activeMic && this.activeMic.clientId === target) this.activeMic = null;
     if (this.self && target === this.self.clientId) {
       this.emitFile('kicked', { reason: reason || '' });
       return;
     }
+    if (this.self && this.authOwnerId() === this.self.clientId) this.sendPresence('presence');
     if (!silent) this.broadcastState();
   };
 
@@ -793,6 +978,19 @@
 
   RoomSession.prototype.broadcastState = function () {
     if (!this.sink) return;
+    // Oda sahibiysem kabul listem yetkilidir; icerik anahtarini uret ve kabul
+    // ettiklerime dagit (yalnizca onlar konusmayi cozebilir)
+    if (this.self && this.authOwnerId() === this.self.clientId) {
+      this.ownerSynced = true;
+      this.ensureContentKey();
+      if (this.contentKey) {
+        var ko = this;
+        this.participants.forEach(function (pp) {
+          if (pp.clientId === ko.self.clientId) return;
+          if (ko.isAdmitted(pp) && pp.pk && ko.sharedPk.get(pp.clientId) !== pp.pk) ko.shareKeyTo(pp);
+        });
+      }
+    }
     var members = this.participantList();
     var memberIds = members.map(function (m) { return m.clientId; });
     var selfId = this.self ? this.self.clientId : null;
@@ -883,7 +1081,7 @@
     }
   };
 
-  RoomSession.prototype.join = function (sink, clientId, name, lang, token) {
+  RoomSession.prototype.join = function (sink, clientId, name, lang, token, creator) {
     var self = this;
     this.sink = sink;
     this.joinStartedAt = Date.now();
@@ -894,8 +1092,15 @@
     var keepCam = resume ? Boolean(this.lastSelf.cam) : false;
     var keepColor = resume && typeof this.lastSelf.color === 'number' ? this.lastSelf.color : -1;
     var app = isAppClient();
-    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam, color: keepColor, app: app, token: app ? '' : String(token || '').slice(0, 64), tokenHash: '', tokenPending: !app && Boolean(token) };
+    var isCreator = Boolean(creator) && app;
+    this.self = { clientId: clientId, name: name, lang: lang, joinedAt: keepJoined, lastSeen: Infinity, hand: 0, cam: keepCam, color: keepColor, app: app, creator: isCreator, pk: '', token: app ? '' : String(token || '').slice(0, 64), tokenHash: '', tokenPending: !app && Boolean(token) };
     this.participants.set(clientId, this.self);
+    if (isCreator) {
+      // Odayi kuran kendini kabul eder ve icerik anahtarini uretir; herkes onun
+      // onayindan gecer. Kuran disinda kimse (kirilmis uygulama dahil) anahtari alamaz.
+      this.approved.add(clientId);
+      this.ownerSynced = true;
+    }
     if (!app) {
       // Misafir: gecersiz link karari icin sure dolunca durumu yeniden degerlendir
       clearTimeout(this.verdictTimer);
@@ -1199,6 +1404,7 @@
     var name = (u.searchParams.get('name') || 'Misafir').trim().slice(0, 40) || 'Misafir';
     var lang = (u.searchParams.get('lang') || 'tr-TR').trim().slice(0, 16);
     var token = (u.searchParams.get('token') || '').trim().slice(0, 64);
+    var creator = u.searchParams.get('creator') === '1';
     var self = this;
     this._room = getRoom(code);
     this._statusFn = function () {
@@ -1210,7 +1416,7 @@
       if (self.readyState === 2) return;
       self.readyState = 1;
       if (typeof self.onopen === 'function') self.onopen({});
-      self._room.join(self, clientId, name, lang, token);
+      self._room.join(self, clientId, name, lang, token, creator);
     }, 0);
   }
 

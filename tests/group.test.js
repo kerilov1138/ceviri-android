@@ -26,9 +26,9 @@ function makeDevice(name, brokers) {
   return g;
 }
 
-function openRoom(dev, code, clientId, name, lang) {
+function openRoom(dev, code, clientId, name, lang, creator) {
   const events = [];
-  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}`);
+  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}${creator ? '&creator=1' : ''}`);
   for (const t of ['room_state', 'history', 'chat_message', 'file_message', 'file_progress', 'file_ready', 'file_failed', 'rtc_signal', 'kicked']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
@@ -47,17 +47,20 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   const rooms = [];
   const ids = names.map((n, i) => 'id' + i + n);
   const last = (i) => rooms[i].last('room_state').data;
+  // Oda sahibi (Ali) kodla gireni "Kabul et" ile iceri alir
+  const admit = async (i) => { await sleep(400); devs[0].CeviriRelay.approve(roomCode, ids[i]); await sleep(600); };
 
-  // 2 kisi: bugunku davranis (gonderen cevirir)
-  for (let i = 0; i < 2; i++) { rooms.push(openRoom(devs[i], roomCode, ids[i], names[i], langs[i])); await sleep(300); }
-  await sleep(700);
+  // 2 kisi: bugunku davranis (gonderen cevirir). Ali odayi kurar, John onay alir.
+  rooms.push(openRoom(devs[0], roomCode, ids[0], names[0], langs[0], true)); await sleep(400);
+  rooms.push(openRoom(devs[1], roomCode, ids[1], names[1], langs[1])); await admit(1);
+  await sleep(500);
   assert.equal(last(0).group, false); assert.equal(last(0).participants.length, 2);
   let m = await post(devs[0], `/api/rooms/${roomCode}/message`, { clientId: ids[0], text: 'merhaba', sourceLang: 'tr-TR' });
   assert.equal(m.data.translatedText, '[en] merhaba');
   console.log('ok 2 kisi: bugunku davranis');
 
   // 4 kisi: grup
-  for (let i = 2; i < 4; i++) { rooms.push(openRoom(devs[i], roomCode, ids[i], names[i], langs[i])); await sleep(300); }
+  for (let i = 2; i < 4; i++) { rooms.push(openRoom(devs[i], roomCode, ids[i], names[i], langs[i])); await admit(i); }
   await sleep(900);
   for (let i = 0; i < 4; i++) { assert.equal(last(i).group, true, 'grup ' + i); assert.equal(last(i).participants.length, 4); }
   m = await post(devs[1], `/api/rooms/${roomCode}/message`, { clientId: ids[1], text: 'hello all', sourceLang: 'en-US' });
@@ -97,11 +100,11 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   rooms[0].es.close(); await sleep(700);
   assert.equal(last(1).activeMicClientId, ids[1], 'cikan konusmacidan sonra siradaki');
   await post(devs[1], `/api/rooms/${roomCode}/mic`, { clientId: ids[1], active: false });
-  rooms[0] = openRoom(devs[0], roomCode, ids[0], names[0], langs[0]); await sleep(800);
+  rooms[0] = openRoom(devs[0], roomCode, ids[0], names[0], langs[0], true); await sleep(1000);
   console.log('ok konusan cikinca soz siradakine gecer');
 
   // 6 kisi dolu, 7. kisi "oda dolu"
-  for (let i = 4; i < 7; i++) { rooms.push(openRoom(devs[i], roomCode, ids[i], names[i], langs[i])); await sleep(350); }
+  for (let i = 4; i < 7; i++) { rooms.push(openRoom(devs[i], roomCode, ids[i], names[i], langs[i])); await admit(i); }
   await sleep(1200);
   assert.equal(last(0).participants.length, 6);
   assert.equal(last(6).full, true, '7. kisi dolu gorur');

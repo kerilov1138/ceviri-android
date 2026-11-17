@@ -168,6 +168,7 @@ const state = {
   ownerId: null,
   roomLocked: false,
   lobby: [], // kapida bekleyenler (oda sahibi gorur)
+  isCreator: false, // bu cihaz odayi kurdu mu
   awaitingApproval: false, // ben kapida bekliyorum (linkle gelen misafir)
   incomingChain: Promise.resolve(),
   videoMesh: null,
@@ -1278,6 +1279,7 @@ function connectToRoom(roomCode) {
     lang: state.myLang,
   });
   if (IS_GUEST && guestInvite && guestInvite.code === roomCode) params.set('token', guestInvite.token);
+  if (state.isCreator) params.set('creator', '1'); // odayi kuran: kendiliginden girer ve icerik anahtarini uretir
 
   const es = new EventSource(`/api/rooms/${encodeURIComponent(roomCode)}/events?${params.toString()}`);
   state.eventSource = es;
@@ -1476,6 +1478,7 @@ async function createOnlineRoom() {
       body: JSON.stringify({}),
     });
     const data = await res.json();
+    state.isCreator = true; // bu cihaz odayi kurdu: oda sahibi
     connectToRoom(data.roomCode);
     updateLanguageBadges();
   } catch (err) {
@@ -1506,6 +1509,7 @@ function joinOnlineRoom() {
   hideAlert();
   state.myName = name;
   localStorage.setItem(STORAGE_KEYS.myName, name);
+  state.isCreator = false; // kodla katilan: oda sahibinin onayini bekler
   connectToRoom(code);
   updateLanguageBadges();
 }
@@ -1811,6 +1815,10 @@ function renderRoomTools() {
   const inRoom = Boolean(state.roomCode && state.participants.length);
   tools.classList.toggle('hidden', !inRoom);
   const amOwner = inRoom && state.ownerId === state.clientId;
+  // Davet linki olusturmayi yalnizca oda sahibi yapar (oda sahibi belli olunca uret)
+  if (amOwner) updateInviteLink();
+  els.copyInviteBtn.classList.toggle('hidden', !amOwner);
+  if (els.inviteLinkInput) els.inviteLinkInput.classList.toggle('hidden', !amOwner);
   els.lockRoomBtn.classList.toggle('hidden', !amOwner);
   els.lockRoomBtn.textContent = state.roomLocked ? t('owner.unlock') : t('owner.lock');
   els.lockedBadge.classList.toggle('hidden', !(inRoom && state.roomLocked && !amOwner));
@@ -2068,6 +2076,7 @@ function leaveOnlineRoom() {
   state.holderSince = 0;
   state.lobby = [];
   state.awaitingApproval = false;
+  state.isCreator = false;
   setWaitingInputs(false);
   renderParticipants();
   if (state.eventSource) {

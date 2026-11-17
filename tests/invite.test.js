@@ -30,10 +30,10 @@ function makeDevice(brokers, native) {
   return g;
 }
 
-function openRoom(dev, code, clientId, name, lang, token) {
+function openRoom(dev, code, clientId, name, lang, token, creator) {
   const events = [];
   const tk = token ? `&token=${encodeURIComponent(token)}` : '';
-  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}${tk}`);
+  const es = new dev.EventSource(`/api/rooms/${code}/events?clientId=${clientId}&name=${encodeURIComponent(name)}&lang=${lang}${tk}${creator ? '&creator=1' : ''}`);
   for (const t of ['room_state', 'history', 'chat_message', 'kicked']) es.addEventListener(t, (e) => events.push({ type: t, data: JSON.parse(e.data) }));
   return { es, events, last: (t) => events.filter(e => e.type === t).slice(-1)[0] };
 }
@@ -57,7 +57,7 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   console.log('ok misafir oda kuramaz, davet uretemez');
 
   const { data: { roomCode } } = await post(host, '/api/rooms', {});
-  const H = openRoom(host, roomCode, 'idHost', 'Kerem', 'tr-TR');
+  const H = openRoom(host, roomCode, 'idHost', 'Kerem', 'tr-TR', undefined, true);
   await sleep(500);
   const token = host.CeviriRelay.createInvite(roomCode);
   assert.ok(token.length >= 20);
@@ -119,12 +119,16 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   D.es.close();
   console.log('ok oda sahibi geri cevirir');
 
-  // Ilk misafir sayfayi yenileyip ayni linkle donebilir (ayni cihaz)
-  A.es.close(); await sleep(400);
+  // Odadan ayrilan misafir tekrar gelince YENIDEN onay bekler, oda sahibine bildirim dontr
+  A.es.close(); await sleep(600);
   const A2 = openRoom(guestA, roomCode, 'idA', 'Anna', 'en-US', token);
   await sleep(1500);
-  assert.equal(A2.last('room_state').data.invite, 'ok', 'ayni kisi geri donebilir');
-  console.log('ok ayni kisi yeniden baglanabilir');
+  assert.equal(A2.last('room_state').data.invite, 'waiting', 'ayrilan tekrar onay bekler');
+  assert.deepEqual(H.last('room_state').data.lobby.map((p) => p.name), ['Anna'], 'oda sahibine yeniden bildirim');
+  assert.equal(host.CeviriRelay.approve(roomCode, 'idA'), true);
+  await sleep(1200);
+  assert.equal(A2.last('room_state').data.invite, 'ok', 'yeniden kabul edilince girer');
+  console.log('ok ayrilan misafir yeniden onay bekler');
 
   A2.es.close(); H.es.close();
   await sleep(200);

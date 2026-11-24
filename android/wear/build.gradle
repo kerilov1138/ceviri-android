@@ -1,0 +1,47 @@
+// CEVIRI saat uygulamasi (Galaxy Watch / Wear OS).
+// Telefon uygulamasiyla AYNI paket adi (com.ceviri.app) ve AYNI imza anahtari
+// kullanilir: Google'in saat-telefon mesajlasmasi bunu sart kosar.
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.ceviri.wear"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.ceviri.app"
+        minSdkVersion 30
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode = Integer.parseInt(System.getenv("APP_VERSION_CODE") ?: "1")
+        versionName = "1.0." + (System.getenv("APP_VERSION_CODE") ?: "0")
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    def releaseKeystore = System.getenv("CEVIRI_KEYSTORE_PATH")
+    signingConfigs {
+        ceviri {
+            if (releaseKeystore) {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv("CEVIRI_KEYSTORE_PASSWORD")
+                keyAlias "ceviri"
+                keyPassword System.getenv("CEVIRI_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (releaseKeystore) {
+                signingConfig signingConfigs.ceviri
+            }
+        }
+    }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation 'com.google.android.gms:play-services-wearable:18.2.0'
+}

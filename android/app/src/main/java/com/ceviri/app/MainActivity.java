@@ -11,6 +11,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AudioRoutePlugin.class);
         // Cevrimdisi ceviri, dil tanima, kulaklik dugmesi, ekran acik, PDF
         registerPlugin(CeviriToolsPlugin.class);
+        // Galaxy Watch / Wear OS koprusu (saate aktar, saatten konus)
+        registerPlugin(WatchBridgePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

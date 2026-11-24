@@ -122,6 +122,7 @@ function getTabClientId() {
 }
 
 const state = {
+  watch: 'off', // 'off' | 'app' (saat uygulamasi) | 'notify' (bildirimle saate)
   headsetConnected: false, // kulaklik takili mi (yalnizca uygulama)
   speakerToo: false, // "Ben"in cevirisi telefondan da calsin mi
   mode: 'loop', // 'loop' | 'face' | 'online'
@@ -501,6 +502,248 @@ const AudioRoute = (() => {
   }
 })();
 
+// ---------------------------------------------------------------------------
+// Saat (Galaxy Watch / Wear OS). "Saate aktar": saatte CEVIRI saat uygulamasi
+// varsa onu acar (saatin mikrofonu "Ben"i dinler); yoksa ceviriyi bildirimle
+// saate yansitir. "Saatten cikar" ile kapanir. Varsayilan kapali.
+// ---------------------------------------------------------------------------
+const WatchBridge = (() => {
+  if (!IS_NATIVE_APP) return null;
+  const reg = (window.capacitorExports && window.capacitorExports.registerPlugin) || (window.Capacitor && window.Capacitor.registerPlugin);
+  try {
+    return reg ? reg('WatchBridge') : null;
+  } catch {
+    return null;
+  }
+})();
+
+const watchApp = () => state.watch === 'app';
+let lastWatchJson = '';
+let watchChain = Promise.resolve();
+
+function renderWatchButtons() {
+  const on = state.watch !== 'off';
+  const label = on ? t('watch.stopBtn') : t('watch.send');
+  const loopOrFace = state.mode === 'loop' || state.mode === 'face';
+  const inRoom = state.mode === 'online' && Boolean(state.roomCode);
+  [
+    [document.getElementById('watchBtn'), loopOrFace],
+    [document.getElementById('watchRoomBtn'), inRoom],
+  ].forEach(([btn, show]) => {
+    if (!btn) return;
+    btn.classList.toggle('hidden', !WatchBridge || !show);
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = label;
+  });
+}
+
+async function toggleWatch() {
+  if (!WatchBridge) return;
+  if (state.watch !== 'off') {
+    watchOff(true);
+    return;
+  }
+  let available = false;
+  try {
+    available = Boolean((await WatchBridge.isWatchAppAvailable()).available);
+  } catch {
+    available = false;
+  }
+  if (available) {
+    try {
+      await WatchBridge.openWatchApp();
+    } catch {
+      showAlert(t('watch.openManually'));
+    }
+    state.watch = 'app';
+    // Canli Dongu: telefon artik yalnizca karsidakini dinler, "Ben" saatte
+    if (state.mode === 'loop' && state.isActive && state.activeSpeaker !== 'partner') switchTurn('partner');
+  } else {
+    let granted = false;
+    try {
+      granted = Boolean((await WatchBridge.ensureNotificationPermission()).granted);
+    } catch {
+      granted = false;
+    }
+    if (!granted) {
+      showAlert(t('watch.notifDenied'));
+      return;
+    }
+    state.watch = 'notify';
+    showAlert(t('watch.fallbackNotify'));
+  }
+  lastWatchJson = '';
+  renderWatchButtons();
+  pushWatchState();
+  applyWakeLock();
+}
+
+function watchOff(tellWatch) {
+  if (!WatchBridge || state.watch === 'off') return;
+  if (tellWatch && state.watch === 'app') WatchBridge.send({ path: '/ceviri/finish', data: '' }).catch(() => {});
+  WatchBridge.cancelNotification().catch(() => {});
+  state.watch = 'off';
+  lastWatchJson = '';
+  renderWatchButtons();
+  applyWakeLock();
+}
+
+function watchUiStrings() {
+  return {
+    speakMe: t('watch.speakMe'),
+    stop: t('orb.stop'),
+    listening: t('watch.listening'),
+    tapToSpeak: t('watch.tapToSpeak'),
+    phoneSpeaking: t('watch.phoneSpeaking'),
+    noSpeech: t('watch.noSpeech'),
+    connecting: t('watch.connecting'),
+    close: t('watch.stopBtn'),
+    accept: t('lobby.accept'),
+    reject: t('lobby.reject'),
+    hint: t('watch.hint'),
+  };
+}
+
+function buildWatchState() {
+  const modeKey = { loop: 'mode.loop', face: 'mode.face', online: 'mode.online', camera: 'mode.camera' }[state.mode] || 'mode.loop';
+  const my = findLanguage(state.myLang).short;
+  const partner = findLanguage(state.partnerLang).short;
+  const m = state.messages[state.messages.length - 1];
+  let last = null;
+  if (m) {
+    const mine = m.speaker === 'me';
+    const who = m.senderName || (mine ? t('who.meUpper') : t('who.partnerUpper'));
+    const langs = m.targetLang ? `${findLanguage(m.sourceLang).short} → ${findLanguage(m.targetLang).short}` : findLanguage(m.sourceLang).short;
+    last = {
+      id: `${state.messages.length}:${m.time}`,
+      side: mine ? 'me' : 'partner',
+      who: `${who} · ${langs}`,
+      text: m.translatedText || m.originalText || '',
+    };
+  }
+  const amOwner = state.mode === 'online' && state.roomCode && state.ownerId === state.clientId;
+  return {
+    mode: state.mode,
+    myLang: state.myLang,
+    title: state.mode === 'online' ? t(modeKey) : `${t(modeKey)} · ${my} ⇄ ${partner}`,
+    mainLabel: els.orbLabel ? els.orbLabel.textContent : '',
+    last,
+    lobby: amOwner ? state.lobby.map((p) => ({ id: p.clientId, text: t('lobby.waiting', { name: censor(p.name || '?', state.myLang) }) })) : [],
+    ui: watchUiStrings(),
+  };
+}
+
+function pushWatchState() {
+  if (!WatchBridge || state.watch === 'off') return;
+  const st = buildWatchState();
+  const json = JSON.stringify(st);
+  if (json === lastWatchJson) return;
+  lastWatchJson = json;
+  if (state.watch === 'app') {
+    WatchBridge.send({ path: '/ceviri/state', data: json }).catch(() => {});
+    return;
+  }
+  // Bildirim (saat uygulamasi yok): ayni bilgi + dugmeler
+  const close = { id: 'close', label: t('watch.stopBtn') };
+  let actions;
+  if (state.mode === 'loop') actions = [{ id: 'toggle', label: st.mainLabel }, { id: 'swap', label: t('turn.swap') }, close];
+  else if (state.mode === 'face') actions = [{ id: 'faceMe', label: t('watch.speakMe') }, close];
+  else if (state.mode === 'online') actions = [{ id: 'toggle', label: st.mainLabel }, close];
+  else actions = [close];
+  WatchBridge.showNotification({
+    title: st.title,
+    text: st.last ? `${st.last.who}\n${st.last.text}` : t('watch.hint'),
+    actions: JSON.stringify(actions),
+    lobby: JSON.stringify(st.lobby),
+    acceptLabel: t('lobby.accept'),
+    rejectLabel: t('lobby.reject'),
+  }).catch(() => {});
+}
+
+// Saatten gelen "Ben" konusmasi (Canli Dongu / Yuz Yuze)
+async function waitIdle() {
+  for (let i = 0; i < 70 && ['translating', 'speaking'].includes(state.phase); i++) {
+    await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+function onWatchUtterance(text) {
+  watchChain = watchChain
+    .then(async () => {
+      text = String(text || '').trim();
+      if (!text || (state.mode !== 'loop' && state.mode !== 'face')) return;
+      await waitIdle(); // karsidakinin cevirisi bitsin
+      const wasActive = state.isActive;
+      if (wasActive) abortRecognition(); // telefon kendi seslendirmesini duymasin
+      await handleUtterance(text, 'me');
+      if (wasActive && state.isActive) {
+        if (state.mode === 'loop' && watchApp()) {
+          state.activeSpeaker = 'partner';
+          updateTurnUI();
+        }
+        startListening();
+      }
+    })
+    .catch(() => {});
+}
+
+function lobbyDecision(id, accept) {
+  if (!id || !window.CeviriRelay || state.ownerId !== state.clientId) return;
+  if (accept) window.CeviriRelay.approve(state.roomCode, id);
+  else window.CeviriRelay.reject(state.roomCode, id);
+}
+
+function initWatch() {
+  if (!WatchBridge) return;
+  WatchBridge.addListener('watchMessage', ({ path, data }) => {
+    if (path === '/ceviri/hello') {
+      if (state.watch === 'off') return;
+      if (state.watch === 'notify') {
+        // Saat uygulamasi sonradan acildi: ona gec
+        WatchBridge.cancelNotification().catch(() => {});
+        state.watch = 'app';
+        renderWatchButtons();
+      }
+      lastWatchJson = '';
+      pushWatchState();
+    } else if (path === '/ceviri/utterance') {
+      if (state.watch !== 'off') onWatchUtterance(data);
+    } else if (path === '/ceviri/toggle') {
+      if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
+    } else if (path === '/ceviri/lobby') {
+      try {
+        const o = JSON.parse(data || '{}');
+        lobbyDecision(o.id, Boolean(o.accept));
+      } catch {
+        // bozuk mesaj
+      }
+    } else if (path === '/ceviri/close') {
+      watchOff(false);
+    }
+  }).catch(() => {});
+  WatchBridge.addListener('notificationAction', ({ id, target }) => {
+    if (id === 'toggle') {
+      if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
+    } else if (id === 'swap') {
+      els.swapTurnBtn.click();
+    } else if (id === 'faceMe') {
+      els.faceMeBtn.click();
+    } else if (id === 'close') {
+      watchOff(true);
+    } else if (id === 'accept' || id === 'reject') {
+      lobbyDecision(target, id === 'accept');
+    }
+  }).catch(() => {});
+  ['watchBtn', 'watchRoomBtn'].forEach((bid) => {
+    const b = document.getElementById(bid);
+    if (b) b.addEventListener('click', toggleWatch);
+  });
+  // Durum degistikce saate yolla (yalnizca degisiklik varsa)
+  setInterval(pushWatchState, 700);
+  renderWatchButtons();
+}
+
 function updateHeadset(info) {
   const connected = Boolean(info && info.connected);
   state.headsetConnected = connected;
@@ -512,8 +755,13 @@ function renderAudioRoute() {
   const bar = document.getElementById('audioRouteBar');
   const btn = document.getElementById('speakerTooBtn');
   if (!bar || !btn) return;
-  const show = Boolean(AudioRoute) && state.headsetConnected && (state.mode === 'loop' || state.mode === 'face');
-  bar.classList.toggle('hidden', !show);
+  const loopOrFace = state.mode === 'loop' || state.mode === 'face';
+  const show = Boolean(AudioRoute) && state.headsetConnected && loopOrFace;
+  btn.classList.toggle('hidden', !show);
+  // Saate aktar dugmesi de ayni satirda (yalnizca uygulamada)
+  renderWatchButtons();
+  const watchShown = Boolean(WatchBridge) && loopOrFace;
+  bar.classList.toggle('hidden', !show && !watchShown);
   btn.setAttribute('aria-pressed', String(state.speakerToo));
   btn.classList.toggle('active', state.speakerToo);
   btn.textContent = state.speakerToo ? t('audio.speakerTooOn') : t('audio.speakerTooOff');
@@ -562,7 +810,30 @@ function speakBoth(text, langCode) {
   });
 }
 
+// Telefon konusurken saat dinlemeyi duraklatsin (yanki olmasin)
+let watchSpeakDepth = 0;
+let watchSpeakOffTimer = null;
+function watchSpeakSignal(delta) {
+  const before = watchSpeakDepth > 0;
+  watchSpeakDepth = Math.max(0, watchSpeakDepth + delta);
+  const after = watchSpeakDepth > 0;
+  if (before === after || state.watch !== 'app' || !WatchBridge) return;
+  clearTimeout(watchSpeakOffTimer);
+  if (after) {
+    WatchBridge.send({ path: '/ceviri/speaking', data: '1' }).catch(() => {});
+  } else {
+    watchSpeakOffTimer = setTimeout(() => {
+      if (watchSpeakDepth === 0) WatchBridge.send({ path: '/ceviri/speaking', data: '0' }).catch(() => {});
+    }, 300);
+  }
+}
+
 function speakText(text, langCode, opts) {
+  watchSpeakSignal(1);
+  return speakTextCore(text, langCode, opts).finally(() => watchSpeakSignal(-1));
+}
+
+function speakTextCore(text, langCode, opts) {
   if (opts && shouldSpeakBoth(opts.mine)) return speakBoth(text, langCode);
   text = stripMaskForSpeech(censor(text, langCode));
   return new Promise((resolve) => {
@@ -833,8 +1104,9 @@ function startListening() {
     const cleanText = (finalTranscript || state.pendingTranscript).trim();
     state.pendingTranscript = '';
     if (cleanText) {
-      // Cumle aslinda karsi tarafin dilindeyse konusani duzelt (sira da ona gore doner)
-      const spk = await detectSpeaker(cleanText, state.activeSpeaker);
+      // Cumle aslinda karsi tarafin dilindeyse konusani duzelt (sira da ona gore doner).
+      // Saat modunda "Ben" saatten gelir; telefona konusan hep karsidakidir.
+      const spk = watchApp() && state.mode === 'loop' ? 'partner' : await detectSpeaker(cleanText, state.activeSpeaker);
       if (!state.isActive || gen !== state.recognitionGen) return;
       if (spk !== state.activeSpeaker) {
         state.activeSpeaker = spk;
@@ -849,7 +1121,7 @@ function startListening() {
         return;
       }
 
-      if (state.settings.autoLoop) {
+      if (state.settings.autoLoop && !watchApp()) {
         state.activeSpeaker = state.activeSpeaker === 'me' ? 'partner' : 'me';
         updateTurnUI();
       }
@@ -1200,6 +1472,8 @@ async function startLiveSession(speaker = state.activeSpeaker) {
   }
 
   stopSpeaking();
+  // Saat modunda Canli Dongu: telefonun mikrofonu yalnizca karsidakini dinler
+  if (watchApp() && state.mode === 'loop') speaker = 'partner';
   state.activeSpeaker = speaker;
   state.isActive = true;
   updateTurnUI();
@@ -1970,6 +2244,7 @@ function inviteLabel() {
 
 function renderRoomTools() {
   renderLobby();
+  renderWatchButtons();
   if (!els.copyInviteBtn.dataset.copied) els.copyInviteBtn.textContent = inviteLabel();
   const tools = els.roomTools;
   if (!tools) return;
@@ -2372,7 +2647,9 @@ async function exportTxt() {
 let wakeWanted = false;
 let wakeSentinel = null;
 async function applyWakeLock() {
-  const want = Boolean(state.settings.keepAwake) && (state.isActive || (state.mode === 'online' && Boolean(state.roomCode)));
+  const want =
+    (Boolean(state.settings.keepAwake) && (state.isActive || (state.mode === 'online' && Boolean(state.roomCode)))) ||
+    state.watch !== 'off'; // saat modunda telefon karsidakini dinledigi icin ekran acik kalir
   if (want === wakeWanted && (!want || window.CeviriTools || wakeSentinel)) return;
   wakeWanted = want;
   if (window.CeviriTools) {
@@ -2532,6 +2809,7 @@ function bindEvents() {
     });
   }
   initAudioRoute();
+  initWatch();
   els.modeFaceBtn.addEventListener('click', () => setMode('face'));
   els.modeOnlineBtn.addEventListener('click', () => setMode('online'));
   // Odadayken sekmeler yerine ust cubuktaki mod dugmesi (uygulamada)

@@ -91,6 +91,11 @@ jobs:
           grep -i -E "verified using|certificate (DN|SHA-256)" out/imza.txt
           grep -q "CN=CEVIRI" out/imza.txt || { echo "::error::APK CEVIRI anahtariyla imzalanmamis"; cat out/imza.txt; exit 1; }
           rm -f out/imza.txt
+          # Saat uygulamasi (Galaxy Watch / Wear OS): ayni anahtarla imzali olmali
+          cp android/wear/build/outputs/apk/release/wear-release.apk out/CEVIRI-saat.apk
+          "$APKSIGNER" verify --print-certs out/CEVIRI-saat.apk > out/imza-saat.txt
+          grep -q "CN=CEVIRI" out/imza-saat.txt || { echo "::error::Saat APK'si CEVIRI anahtariyla imzalanmamis"; cat out/imza-saat.txt; exit 1; }
+          rm -f out/imza-saat.txt
           rm -f "$RUNNER_TEMP/ceviri.keystore"
           ls -la out
 
@@ -98,7 +103,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CEVIRI-apk
-          path: out/CEVIRI.apk
+          path: |
+            out/CEVIRI.apk
+            out/CEVIRI-saat.apk
           if-no-files-found: error
 
       - name: Releases bolumune ekle
@@ -109,9 +116,12 @@ jobs:
           name: CEVIRI v1.0.${{ github.run_number }}
           body: |
             Android icin CEVIRI uygulamasi. Telefona CEVIRI.apk dosyasini indirip acin.
+            Galaxy Watch / Wear OS saat icin: CEVIRI-saat.apk (saate yuklenir).
             (Ilk kurulumda "bilinmeyen kaynaklardan yukleme" izni istenir.)
             v1.0.5 oncesi bir surum yukluyse: imza anahtari degistigi icin eski uygulamayi bir kez silip bu surumu kurun.
-          files: out/CEVIRI.apk
+          files: |
+            out/CEVIRI.apk
+            out/CEVIRI-saat.apk
 
   web:
     runs-on: ubuntu-latest

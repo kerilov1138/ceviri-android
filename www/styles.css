@@ -2104,3 +2104,7 @@ html.guest-mode #inviteLinkInput {
 .setting-row .offline-row .offline-name {
   color: var(--text);
 }
+.audio-route-bar {
+  gap: 8px;
+  flex-wrap: wrap;
+}

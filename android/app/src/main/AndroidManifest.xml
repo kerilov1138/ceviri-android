@@ -46,6 +46,8 @@
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Saate aktar: ceviri bildirimi (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Online odada kamera (sessiz goruntu) -->
     <uses-permission android:name="android.permission.CAMERA" />

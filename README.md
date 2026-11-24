@@ -3,6 +3,11 @@
 CEVIRI canlı sesli çeviri uygulamasının Android sürümü. APK, GitHub Actions
 üzerinde otomatik derlenir; bilgisayarına Android Studio kurman gerekmez.
 
+> **Kullanım koşulları:** Tüm hakları saklıdır; ayrıntılar [LICENSE](LICENSE)
+> dosyasında. Uygulama "olduğu gibi" sunulur. Kullanımından ve kullanıcıların
+> paylaştığı içerikten her kullanıcı kendisi sorumludur. İzinsiz kopyalanmış ya
+> da değiştirilmiş sürümlerden geliştirici sorumlu değildir.
+
 ## APK'yı almak (ilk kez)
 
 1. GitHub'da yeni bir depo (repository) oluştur, örn. `ceviri-android`.

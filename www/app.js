@@ -3091,6 +3091,15 @@ function bindEvents() {
   els.exportBtn.addEventListener('click', exportTranscript);
   document.getElementById('exportPdfBtn').addEventListener('click', exportPdf);
   document.getElementById('exportTxtBtn').addEventListener('click', exportTxt);
+  // Hakkinda (lisans ve sorumluluk reddi): telefon/tablet uygulamasi ve bilgisayar surumu
+  const aboutModal = document.getElementById('aboutModal');
+  const aboutBtn = document.getElementById('aboutBtn');
+  aboutBtn.classList.toggle('hidden', !(IS_NATIVE_APP || IS_DESKTOP));
+  aboutBtn.addEventListener('click', () => aboutModal.classList.remove('hidden'));
+  document.getElementById('closeAboutBtn').addEventListener('click', () => aboutModal.classList.add('hidden'));
+  aboutModal.addEventListener('click', (e) => {
+    if (e.target === aboutModal) aboutModal.classList.add('hidden');
+  });
   document.getElementById('closeExportBtn').addEventListener('click', () => els.exportModal.classList.add('hidden'));
   els.exportModal.addEventListener('click', (e) => {
     if (e.target === els.exportModal) els.exportModal.classList.add('hidden');

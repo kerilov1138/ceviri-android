@@ -2142,3 +2142,37 @@ html.guest-mode #inviteLinkInput {
 .remote-audio {
   display: none;
 }
+
+/* Hakkinda: lisans ve sorumluluk reddi */
+.about-card {
+  max-width: 560px;
+}
+.about-body {
+  max-height: 70vh;
+  overflow-y: auto;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+.about-body h4 {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.95rem;
+}
+.about-body ol {
+  margin: 0;
+  padding-inline-start: 1.2rem;
+}
+.about-body li {
+  margin-bottom: 0.45rem;
+}
+.about-head {
+  margin: 0 0 0.6rem;
+  color: var(--text-muted, var(--text));
+}
+.about-accept {
+  margin: 0 0 0.4rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  font-weight: 600;
+}

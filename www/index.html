@@ -42,6 +42,9 @@
             <option value="online" data-i18n="mode.online">Online Oda</option>
           </select>
         </div>
+        <button id="aboutBtn" class="icon-btn hidden" title="Hakkında" aria-label="Hakkında" data-i18n-attr="title:about.title;aria-label:about.title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="11"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        </button>
         <button id="exportBtn" class="icon-btn" title="Sohbeti İndir" aria-label="Sohbeti İndir" data-i18n-attr="title:btn.export;aria-label:btn.export">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </button>
@@ -339,6 +342,36 @@
       <div class="modal-body export-options">
         <button id="exportPdfBtn" type="button" class="online-btn primary" data-i18n="export.pdf">📄 PDF olarak kaydet</button>
         <button id="exportTxtBtn" type="button" class="online-btn secondary" data-i18n="export.txt">📝 Metin olarak kaydet</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="aboutModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+    <div class="modal-card about-card">
+      <div class="modal-header">
+        <h3 id="aboutTitle" data-i18n="about.title">Hakkında</h3>
+        <button id="closeAboutBtn" class="icon-btn" aria-label="Kapat" data-i18n-attr="aria-label:settings.close">&times;</button>
+      </div>
+      <div class="modal-body about-body">
+        <p class="about-head">CEVIRI<br>Copyright © 2026 kerilov1138. Tüm hakları saklıdır. All rights reserved.</p>
+        <p class="about-accept">Uygulamayı kullanan herkes burada yazılanları kabul etmiş bulunmaktadır.</p>
+        <h4>Lisans ve Sorumluluk Reddi</h4>
+        <ol>
+          <li>Bu uygulamanın kaynak kodları, uygulama dosyaları (APK, EXE) ve web sürümü telif hakkı sahibine aittir. Yazılı izin olmadan kopyalanamaz, değiştirilerek ya da değiştirilmeden yeniden yayınlanamaz, satılamaz ve başka bir üründe kullanılamaz. Kodun GitHub'da görünür olması bu hakları vermez.</li>
+          <li>Yazılım "OLDUĞU GİBİ" sunulur. Çalışacağına, kesintisiz ya da hatasız olacağına, çevirilerin doğru olacağına veya belirli bir amaca uygun olacağına dair açık ya da örtülü hiçbir garanti verilmez.</li>
+          <li>Uygulamanın (online oda, sesli sohbet, kamera, dosya paylaşımı ve diğer özellikler dahil) kullanımından, kullanıcıların paylaştığı içeriklerden, yanlış çeviriden, veri kaybından ve her türlü doğrudan ya da dolaylı zarardan telif hakkı sahibi sorumlu tutulamaz. Her kullanıcı, uygulamayı kullanma biçimiyle ve paylaştığı içerikle ilgili tüm yasal sorumluluğu kendisi taşır.</li>
+          <li>Bu yazılımın izinsiz kopyalanmış, değiştirilmiş ya da yeniden yayınlanmış sürümlerinden ve bunların kullanımından telif hakkı sahibi hiçbir şekilde sorumlu değildir.</li>
+          <li>Uygulama çeviri, konuşma tanıma ve bağlantı için üçüncü taraf hizmetler kullanır. Bu hizmetlerin kullanımı ilgili hizmet sağlayıcıların koşullarına tabidir.</li>
+        </ol>
+        <h4 lang="en">License and Disclaimer</h4>
+        <p class="about-accept" lang="en">Everyone who uses the application is deemed to have accepted the terms written here.</p>
+        <ol lang="en">
+          <li>The source code, application files (APK, EXE) and web version belong to the copyright holder. They may not be copied, redistributed (modified or unmodified), sold or used in other products without prior written permission. Public visibility on GitHub does not grant these rights.</li>
+          <li>The software is provided "as is", without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, accuracy of translations and non-infringement.</li>
+          <li>In no event shall the copyright holder be liable for any claim, damages or other liability arising from the use of the software (including online rooms, voice chat, camera and file sharing), from content shared by users, or from inaccurate translations. Each user is solely responsible for how they use the software and for the content they share.</li>
+          <li>The copyright holder is not responsible in any way for unauthorized copies, modified or redistributed versions of this software, or their use.</li>
+          <li>The application relies on third-party services for translation, speech recognition and connectivity; their use is subject to those providers' terms.</li>
+        </ol>
       </div>
     </div>
   </div>

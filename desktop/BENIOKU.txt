@@ -1,0 +1,23 @@
+CEVIRI - Bilgisayar Surumu (Windows / macOS)
+==========================================
+
+Bu klasor, telefon uygulamasindaki (APK) CEVIRI ile ayni uygulamayi
+bilgisayarda tarayicida calistirir: Kamera, Canli Dongu, Yuz Yuze ve
+Online Oda (6 kisiye kadar, kamera, dosya, oda sahibi, renkler).
+
+EN KOLAYI (Windows): CEVIRI.exe dosyasina cift tiklayin. Node.js
+gerekmez; tek dosyadir, istediginiz yere kopyalayabilirsiniz.
+Online odayla acmak icin: CEVIRI.exe --mode=online
+
+Klasorle calistirma icin gereken: Node.js (https://nodejs.org) ve Chrome ya da Edge tarayicisi
+(ses tanima en iyi bu ikisinde calisir; Safari de olur, Firefox olmaz).
+
+WINDOWS : CEVIRI-Baslat.bat dosyasina cift tiklayin.
+macOS   : CEVIRI-Baslat-Mac.command dosyasina cift tiklayin.
+          Acilmazsa Terminalde bir kez: chmod +x CEVIRI-Baslat-Mac.command
+
+Pencere acik kaldigi surece uygulama calisir; kapatinca durur.
+Online odada "Davet Linkini Kopyala" ile alinan link herkesin
+telefonunda ya da bilgisayarinda acilir (internet gerekir).
+
+Bu klasoru baska bir bilgisayara kopyalayip orada da calistirabilirsiniz.

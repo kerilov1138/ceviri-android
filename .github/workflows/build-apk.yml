@@ -18,7 +18,48 @@ permissions:
   contents: write
 
 jobs:
+  # Bilgisayar surumu: tek dosyalik CEVIRI.exe (Node.js gerektirmez)
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Kodlari al
+        uses: actions/checkout@v5
+
+      - name: Node.js kur
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Bagimliliklari yukle
+        run: |
+          npm ci
+          npm i --no-save postject@1.0.0-alpha.6
+
+      - name: CEVIRI.exe derle
+        run: |
+          npm run copy-core
+          node desktop/build-exe.js
+
+      - name: CEVIRI.exe calisiyor mu
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath out-desktop/CEVIRI.exe -ArgumentList '--no-open','--port=3999' -PassThru
+          Start-Sleep -Seconds 4
+          $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3999/
+          Stop-Process -Id $p.Id
+          if ($r.StatusCode -ne 200 -or -not $r.Content.Contains('CEVIRI')) { throw 'CEVIRI.exe sayfayi sunmadi' }
+
+      - name: Artifacts olarak yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: CEVIRI-exe
+          path: out-desktop/CEVIRI.exe
+          if-no-files-found: error
+
   build:
+    needs: desktop
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -99,6 +140,12 @@ jobs:
           rm -f "$RUNNER_TEMP/ceviri.keystore"
           ls -la out
 
+      - name: CEVIRI.exe'yi al
+        uses: actions/download-artifact@v4
+        with:
+          name: CEVIRI-exe
+          path: out
+
       - name: APK'yi Artifacts olarak yukle
         uses: actions/upload-artifact@v4
         with:
@@ -119,9 +166,11 @@ jobs:
             Galaxy Watch / Wear OS saat icin: CEVIRI-saat.apk (saate yuklenir).
             (Ilk kurulumda "bilinmeyen kaynaklardan yukleme" izni istenir.)
             v1.0.5 oncesi bir surum yukluyse: imza anahtari degistigi icin eski uygulamayi bir kez silip bu surumu kurun.
+            Bilgisayar (Windows): CEVIRI.exe - cift tiklayin, Node.js gerekmez (Chrome veya Edge'de acilir).
           files: |
             out/CEVIRI.apk
             out/CEVIRI-saat.apk
+            out/CEVIRI.exe
 
   web:
     runs-on: ubuntu-latest

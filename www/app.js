@@ -124,6 +124,8 @@ function getTabClientId() {
 const state = {
   watch: 'off', // 'off' | 'app' (saat uygulamasi) | 'notify' (bildirimle saate)
   headsetConnected: false, // kulaklik takili mi (yalnizca uygulama)
+  voiceMode: false, // online odada herkes ayni dilde: dogrudan sesli sohbet
+  micMuted: false, // sesli sohbette mikrofonum kapali mi
   speakerToo: false, // "Ben"in cevirisi telefondan da calsin mi
   mode: 'loop', // 'loop' | 'face' | 'online'
   isActive: false,
@@ -365,7 +367,8 @@ function updateTurnUI() {
   const inQueue = groupWait && state.queue.includes(state.clientId);
   // 2 kisi: karsidaki konusurken dugme kilitli (bugunku davranis).
   // 3+ kisi: dugme "Soz Iste" / "Siradan Cik" olur.
-  els.mainToggleBtn.disabled = (lockedByRemote && !state.group) || (state.mode === 'online' && state.awaitingApproval);
+  els.mainToggleBtn.disabled =
+    (lockedByRemote && !state.group) || (state.mode === 'online' && (state.awaitingApproval || state.voiceMode));
   els.mainToggleBtn.classList.toggle('locked-remote', lockedByRemote && !state.group);
   els.mainToggleBtn.classList.toggle('raise-hand', groupWait);
   els.mainToggleBtn.classList.toggle('in-queue', inQueue);
@@ -381,6 +384,7 @@ function updateTurnUI() {
           : t('orb.stop')
         : t('orb.start');
   if (state.mode === 'online' && state.awaitingApproval) els.orbLabel.textContent = t('lobby.waitingShort');
+  if (state.mode === 'online' && state.voiceMode && !state.awaitingApproval) els.orbLabel.textContent = t('voice.on');
 
   els.faceMeCard.classList.toggle('active-me', state.isActive && isMe);
   els.facePartnerCard.classList.toggle('active-partner', state.isActive && !isMe);
@@ -710,7 +714,8 @@ function initWatch() {
     } else if (path === '/ceviri/utterance') {
       if (state.watch !== 'off') onWatchUtterance(data);
     } else if (path === '/ceviri/toggle') {
-      if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
+      if (state.mode === 'online' && state.voiceMode) toggleMyMic();
+      else if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
     } else if (path === '/ceviri/lobby') {
       try {
         const o = JSON.parse(data || '{}');
@@ -724,7 +729,8 @@ function initWatch() {
   }).catch(() => {});
   WatchBridge.addListener('notificationAction', ({ id, target }) => {
     if (id === 'toggle') {
-      if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
+      if (state.mode === 'online' && state.voiceMode) toggleMyMic();
+      else if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
     } else if (id === 'swap') {
       els.swapTurnBtn.click();
     } else if (id === 'faceMe') {
@@ -1457,6 +1463,7 @@ async function setRemoteMicLock(active) {
 }
 
 async function startLiveSession(speaker = state.activeSpeaker) {
+  if (state.mode === 'online' && state.voiceMode) return; // sesli sohbette ceviri yok
   hideAlert();
   if (state.mode === 'online') {
     if (!state.roomCode) {
@@ -1699,6 +1706,7 @@ function connectToRoom(roomCode) {
         remoteStreams.set(id, stream);
         renderParticipants();
       },
+      onRemoteAudio: (id, stream) => setRemoteAudio(id, stream),
       onPeerState: (id, connState) => {
         peerStates.set(id, connState);
         renderParticipants();
@@ -1755,6 +1763,8 @@ function connectToRoom(roomCode) {
       showAlert(t(data.invite === 'used' ? 'invite.used' : 'invite.invalid'));
       return;
     }
+    // Herkes ayni dildeyse ceviri yerine dogrudan sesli sohbet
+    updateVoiceMode(data.invite === 'waiting');
     // Kapida bekleme: linkle gelen, oda sahibi "Kabul et" diyene kadar iceri giremez
     const wasWaiting = state.awaitingApproval;
     state.awaitingApproval = data.invite === 'waiting';
@@ -1793,6 +1803,8 @@ function connectToRoom(roomCode) {
         if (navigator.vibrate) navigator.vibrate(200);
         setInterimKey('group.yourTurnNow');
         startLiveSession('me');
+      } else if (state.voiceMode) {
+        setInterimKey('voice.active');
       } else if (!state.isActive) {
         if (state.activeMicClientId && state.activeMicClientId !== state.clientId) {
           if (pos >= 0) setInterimKey('group.inQueue', { n: pos + 1 });
@@ -1821,7 +1833,9 @@ function connectToRoom(roomCode) {
     updateLanguageBadges();
     updateTurnUI();
 
-    if (!state.isActive) {
+    if (state.voiceMode) {
+      setInterimKey('voice.active');
+    } else if (!state.isActive) {
       if (state.activeMicClientId && state.activeMicClientId !== state.clientId) {
         setInterimKey('online.partnerSpeaking', { name: state.activeMicName || t('online.otherSide') });
       } else if (partner && state.phase === 'idle') {
@@ -2388,7 +2402,7 @@ function renderParticipants() {
       tile.innerHTML = `
         <video class="p-video hidden" autoplay playsinline muted></video>
         <div class="p-avatar" aria-hidden="true"></div>
-        <div class="p-badges"><span class="p-owner hidden">👑</span><span class="p-speaking hidden">🎙️</span><span class="p-hand hidden"></span></div>
+        <div class="p-badges"><span class="p-owner hidden">👑</span><span class="p-speaking hidden">🎙️</span><span class="p-muted hidden">🔇</span><span class="p-hand hidden"></span></div>
         <div class="p-footer">
           <span class="p-name" dir="auto"></span>
           <span class="p-lang"></span>
@@ -2400,7 +2414,15 @@ function renderParticipants() {
         btn.type = 'button';
         btn.className = 'p-cam-btn';
         btn.addEventListener('click', toggleMyCamera);
-        tile.appendChild(btn);
+        // Ayni dildeki sesli sohbette: kamera simgesinin yaninda mikrofon
+        const mic = document.createElement('button');
+        mic.type = 'button';
+        mic.className = 'p-mic-btn hidden';
+        mic.addEventListener('click', toggleMyMic);
+        const tools = document.createElement('div');
+        tools.className = 'p-self-tools';
+        tools.append(mic, btn);
+        tile.appendChild(tools);
       } else {
         // Oda sahibi icin: bu kisiyi odadan cikar
         const kick = document.createElement('button');
@@ -2438,6 +2460,11 @@ function renderParticipants() {
       kickBtn.title = t('owner.kick');
       kickBtn.setAttribute('aria-label', `${t('owner.kick')}: ${p.name || ''}`);
     }
+    // Sesli sohbette mikrofonu kapali olanlar
+    const mutedBadge = tile.querySelector('.p-muted');
+    const isMuted = state.voiceMode && (isMe ? state.micMuted : Boolean(p.mute));
+    mutedBadge.classList.toggle('hidden', !isMuted);
+    mutedBadge.title = t('voice.mutedBadge');
     const qpos = state.group ? state.queue.indexOf(p.clientId) : -1;
     const hand = tile.querySelector('.p-hand');
     hand.classList.toggle('hidden', qpos < 0);
@@ -2475,9 +2502,103 @@ function renderParticipants() {
       btn.title = on ? t('video.off') : t('video.on');
       btn.setAttribute('aria-label', btn.title);
       btn.disabled = !state.videoMesh;
+      const mic = tile.querySelector('.p-mic-btn');
+      mic.classList.toggle('hidden', !state.voiceMode);
+      mic.textContent = state.micMuted ? '🔇' : '🎙';
+      mic.classList.toggle('on', state.micMuted);
+      mic.title = state.micMuted ? t('voice.unmute') : t('voice.mute');
+      mic.setAttribute('aria-label', mic.title);
+      mic.setAttribute('aria-pressed', String(state.micMuted));
     }
   });
   layoutVideoGrid();
+}
+
+// ---------------------------------------------------------------------------
+// Ayni dildeki sesli sohbet: odadaki herkes ayni dili konusuyorsa ceviri
+// gerekmez; mikrofon sesi dogrudan gider. Mikrofon varsayilan acik; kendi
+// kutumdaki mikrofon simgesiyle anlik kapatilip acilir. Farkli dilde biri
+// gelirse kendiliginden normal (ceviri) moda donulur.
+// ---------------------------------------------------------------------------
+const remoteAudioEls = new Map(); // katilimci id -> <audio>
+
+function setRemoteAudio(id, stream) {
+  let el = remoteAudioEls.get(id);
+  if (!stream) {
+    if (el) {
+      el.srcObject = null;
+      el.remove();
+      remoteAudioEls.delete(id);
+    }
+    return;
+  }
+  if (!el) {
+    el = document.createElement('audio');
+    el.autoplay = true;
+    el.setAttribute('playsinline', '');
+    el.className = 'remote-audio';
+    document.body.appendChild(el);
+    remoteAudioEls.set(id, el);
+  }
+  if (el.srcObject !== stream) el.srcObject = stream;
+  el.play().catch(() => {
+    // Tarayici dokunus bekliyor: ilk dokunusta yeniden dene
+    document.addEventListener('click', () => el.play().catch(() => {}), { once: true, capture: true });
+  });
+}
+
+function computeSameLanguage(waiting) {
+  if (waiting || state.mode !== 'online' || !state.roomCode) return false;
+  const list = state.participants || [];
+  if (list.length < 2) return false;
+  const first = baseLang(list[0].lang);
+  return Boolean(first) && list.every((p) => baseLang(p.lang) === first);
+}
+
+function updateVoiceMode(waiting) {
+  const want = computeSameLanguage(waiting);
+  if (want && !state.voiceMode) enterVoiceMode();
+  else if (!want && state.voiceMode) exitVoiceMode();
+}
+
+async function enterVoiceMode() {
+  state.voiceMode = true;
+  state.micMuted = false; // mikrofon varsayilan acik
+  if (state.isActive) await stopLiveSession(); // konusma tanima mikrofonu birakir
+  setInterimKey('voice.active');
+  updateTurnUI();
+  renderParticipants();
+  const mesh = state.videoMesh;
+  if (!mesh) return;
+  mesh.setAudioMuted(false);
+  if (window.CeviriRelay) window.CeviriRelay.setMute(state.roomCode, false);
+  try {
+    await mesh.startAudio();
+  } catch {
+    showAlert(t('voice.micFailed'));
+  }
+  if (!state.voiceMode) mesh.stopAudio(); // bu arada normal moda donulduyse
+}
+
+function exitVoiceMode() {
+  if (!state.voiceMode) return;
+  state.voiceMode = false;
+  state.micMuted = false;
+  if (state.videoMesh) state.videoMesh.stopAudio();
+  [...remoteAudioEls.keys()].forEach((id) => setRemoteAudio(id, null));
+  if (state.roomCode && window.CeviriRelay) window.CeviriRelay.setMute(state.roomCode, false);
+  if (state.roomCode) setInterimKey('online.yourTurn');
+  updateTurnUI();
+  renderParticipants();
+}
+
+function toggleMyMic() {
+  if (!state.voiceMode || !state.videoMesh) return;
+  state.micMuted = !state.micMuted;
+  state.videoMesh.setAudioMuted(state.micMuted);
+  if (window.CeviriRelay) window.CeviriRelay.setMute(state.roomCode, state.micMuted);
+  if (navigator.vibrate) navigator.vibrate(30);
+  renderParticipants();
 }
 
 async function toggleMyCamera() {
@@ -2499,6 +2620,7 @@ async function toggleMyCamera() {
 
 function leaveOnlineRoom() {
   if (state.isActive) stopLiveSession();
+  exitVoiceMode();
   if (state.videoMesh) {
     state.videoMesh.destroy();
     state.videoMesh = null;
@@ -2690,6 +2812,8 @@ function onHeadsetButton() {
   if (state.mode === 'face') {
     // Yuz Yuze: kulaklik bendeyse "Ben" konusur
     els.faceMeBtn.click();
+  } else if (state.mode === 'online' && state.voiceMode) {
+    toggleMyMic();
   } else if (state.mode === 'loop' || state.mode === 'online') {
     if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
   }

@@ -9,3 +9,4 @@ www/mqtt.min.js
 *.keystore
 *.jks
 www/tesseract/
+out-desktop/

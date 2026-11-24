@@ -152,6 +152,13 @@ const post = async (dev, path, body) => { const r = await dev.fetch(path, { meth
   assert.ok(p, 'A back in room for B'); assert.equal(p.lang, 'en-US');
   console.log('ok reconnect with new language');
 
+  // Ayni dildeki sesli sohbet: mikrofon kapali bilgisi karsiya gider
+  A.CeviriRelay.setMute(roomCode, true); await sleep(500);
+  assert.equal(rb.last('room_state').data.participants.find(x => x.clientId === 'aaa').mute, true);
+  A.CeviriRelay.setMute(roomCode, false); await sleep(500);
+  assert.equal(rb.last('room_state').data.participants.find(x => x.clientId === 'aaa').mute, false);
+  console.log('ok mikrofon kapali/acik bilgisi');
+
   // Wrong room code cannot read: C in other room sees nothing
   const C = makeDevice('C', brokers.slice(1)); await C.fetch('/api/online-info'); await sleep(500);
   const rc = openRoom(C, 'WRONG123', 'ccc', 'Eve', 'fr-FR'); await sleep(500);

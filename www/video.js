@@ -1,4 +1,7 @@
-// CEVIRI - Online odada kamera (sessiz goruntu)
+// CEVIRI - Online odada kamera (ve ayni dildeki sesli sohbet)
+//
+// Odadaki herkes ayni dili konusuyorsa ceviri gerekmez: o zaman mikrofon sesi
+// de bu baglantilar uzerinden dogrudan gider (startAudio / stopAudio).
 //
 // Her katilimci cifti arasinda dogrudan WebRTC baglantisi kurulur (en fazla
 // 6 kisi = 5 baglanti). Goruntu sesSIZ gider: mikrofon konusma tanimaya
@@ -22,10 +25,16 @@ const VIDEO_CONSTRAINTS = {
   audio: false,
 };
 const MAX_BITRATE = 300000; // ~300 kbps: 6 kisilik odada mobil veriyi korur
+const AUDIO_CONSTRAINTS = {
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  video: false,
+};
 
-export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, onPeerState }) {
+export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, onRemoteAudio, onPeerState }) {
   const peers = new Map(); // id -> { pc, polite, makingOffer, ignoreOffer, sender }
   let localStream = null;
+  let audioStream = null; // ayni dildeki sesli sohbet icin mikrofon
+  let audioMuted = false;
   let destroyed = false;
   let receiveVideo = true; // false: "Goruntuleri alma" (veri tasarrufu)
 
@@ -70,6 +79,13 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
     applyDirections(peer);
   }
 
+  function addLocalAudio(peer) {
+    if (!audioStream || peer.audioSender) return;
+    const track = audioStream.getAudioTracks()[0];
+    if (!track) return;
+    peer.audioSender = peer.pc.addTrack(track, audioStream);
+  }
+
   function createPeer(id) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const peer = {
@@ -79,6 +95,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       makingOffer: false,
       ignoreOffer: false,
       sender: null,
+      audioSender: null,
       queue: Promise.resolve(), // gelen sinyaller bu kisi icin SIRAYLA islenir
       pendingCandidates: [], // teklif/cevap gelmeden ulasan adaylar bekletilir
       restarts: 0,
@@ -101,6 +118,13 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
     };
     pc.ontrack = ({ track, streams }) => {
       const stream = (streams && streams[0]) || new MediaStream([track]);
+      if (track.kind === 'audio') {
+        if (onRemoteAudio) {
+          onRemoteAudio(id, stream);
+          track.addEventListener('ended', () => onRemoteAudio(id, null));
+        }
+        return;
+      }
       onRemoteStream(id, stream);
       track.addEventListener('ended', () => onRemoteStream(id, null));
     };
@@ -119,6 +143,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       if (onPeerState) onPeerState(id, st);
     };
     addLocalTrack(peer);
+    addLocalAudio(peer);
     return peer;
   }
 
@@ -173,6 +198,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
     }
     peers.delete(id);
     onRemoteStream(id, null);
+    if (onRemoteAudio) onRemoteAudio(id, null);
   }
 
   return {
@@ -224,6 +250,45 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
       }
     },
 
+    get audioOn() {
+      return Boolean(audioStream);
+    },
+
+    get audioMuted() {
+      return audioMuted;
+    },
+
+    /** Ayni dildeki sesli sohbet: mikrofonu ac ve herkese gonder. */
+    async startAudio() {
+      if (audioStream) return audioStream;
+      audioStream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS);
+      audioStream.getAudioTracks().forEach((t) => (t.enabled = !audioMuted));
+      for (const peer of peers.values()) addLocalAudio(peer);
+      return audioStream;
+    },
+
+    stopAudio() {
+      if (!audioStream) return;
+      audioStream.getTracks().forEach((t) => t.stop());
+      audioStream = null;
+      for (const peer of peers.values()) {
+        if (peer.audioSender) {
+          try {
+            peer.pc.removeTrack(peer.audioSender);
+          } catch {
+            // yoksay
+          }
+          peer.audioSender = null;
+        }
+      }
+    },
+
+    /** Mikrofonu anlik kapat/ac (baglanti kopmaz). */
+    setAudioMuted(muted) {
+      audioMuted = Boolean(muted);
+      if (audioStream) audioStream.getAudioTracks().forEach((t) => (t.enabled = !audioMuted));
+    },
+
     get receiveVideo() {
       return receiveVideo;
     },
@@ -236,6 +301,7 @@ export function createVideoMesh({ selfId, roomCode, sendSignal, onRemoteStream, 
 
     destroy() {
       this.stopCamera();
+      this.stopAudio();
       for (const id of [...peers.keys()]) closePeer(id);
       destroyed = true;
     },

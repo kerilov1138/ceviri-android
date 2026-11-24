@@ -36,7 +36,7 @@
   // Uctan uca sifrelenen (yalnizca kabul edilenlerin okuyabilecegi) mesaj turleri.
   // Bunlarin disindakiler (presence/hello/leave/invite/approve/keyshare) el sikisma
   // katmanidir ve oda kodundan turetilen anahtarla sarilir.
-  var CONTENT_TYPES = { chat: 1, history: 1, 'file-meta': 1, 'file-chunk': 1, 'file-req': 1, mic: 1, hand: 1, cam: 1, rtc: 1 };
+  var CONTENT_TYPES = { chat: 1, history: 1, 'file-meta': 1, 'file-chunk': 1, 'file-req': 1, mic: 1, hand: 1, cam: 1, mute: 1, rtc: 1 };
   var ROOM_CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
   function sanitizeRoomCode(raw) {
@@ -597,6 +597,7 @@
         lastSeen: now,
         hand: typeof msg.handTs === 'number' ? msg.handTs : prev ? prev.hand : 0,
         cam: typeof msg.cam === 'boolean' ? msg.cam : prev ? prev.cam : false,
+        mute: typeof msg.mute === 'boolean' ? msg.mute : prev ? prev.mute : false,
         color: validColor(msg.color) ? msg.color : prev && validColor(prev.color) ? prev.color : -1,
         app: msg.app === true,
         creator: msg.creator === true,
@@ -721,6 +722,16 @@
       return;
     }
 
+    if (msg.type === 'mute') {
+      var pm = this.participants.get(msg.from);
+      if (pm) {
+        pm.lastSeen = now;
+        pm.mute = Boolean(msg.on);
+      }
+      this.broadcastState();
+      return;
+    }
+
     if (msg.type === 'rtc') {
       if (this.self && msg.to === this.self.clientId && msg.data) this.emitFile('rtc_signal', { from: msg.from, data: msg.data });
       return;
@@ -824,6 +835,7 @@
       micTs: micActive ? this.activeMic.ts : 0,
       handTs: this.self.hand || 0,
       cam: Boolean(this.self.cam),
+      mute: Boolean(this.self.mute),
       color: typeof this.self.color === 'number' ? this.self.color : -1,
       locked: this.locked,
       allowed: this.locked ? Array.from(this.allowed) : [],
@@ -863,7 +875,7 @@
   RoomSession.prototype.allSorted = function () {
     var list = [];
     this.participants.forEach(function (p) {
-      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt, hand: p.hand || 0, cam: Boolean(p.cam), color: validColor(p.color) ? p.color : -1 });
+      list.push({ clientId: p.clientId, name: p.name, lang: p.lang, joinedAt: p.joinedAt, hand: p.hand || 0, cam: Boolean(p.cam), mute: Boolean(p.mute), color: validColor(p.color) ? p.color : -1 });
     });
     list.sort(function (a, b) { return a.joinedAt - b.joinedAt || (a.clientId < b.clientId ? -1 : 1); });
     return list;
@@ -973,6 +985,14 @@
     if (!this.self) return;
     this.self.cam = Boolean(on);
     this.send({ type: 'cam', on: Boolean(on) });
+    this.broadcastState();
+  };
+
+  /** Ayni dildeki sesli sohbette mikrofonu kapattim / actim. */
+  RoomSession.prototype.setMute = function (on) {
+    if (!this.self) return;
+    this.self.mute = Boolean(on);
+    this.send({ type: 'mute', on: Boolean(on) });
     this.broadcastState();
   };
 
@@ -1610,6 +1630,11 @@
     setCam: function (code, on) {
       var room = rooms[sanitizeRoomCode(code)];
       if (room) room.setCam(on);
+    },
+    /** Sesli sohbette mikrofon kapali/acik durumunu odaya bildirir. */
+    setMute: function (code, on) {
+      var room = rooms[sanitizeRoomCode(code)];
+      if (room) room.setMute(on);
     },
     /** WebRTC sinyal mesajini (teklif/cevap/aday) tek bir kisiye gonderir. */
     sendSignal: function (code, to, data) {

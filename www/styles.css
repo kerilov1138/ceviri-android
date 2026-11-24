@@ -2108,3 +2108,32 @@ html.guest-mode #inviteLinkInput {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* Ayni dildeki sesli sohbet: kamera dugmesinin yaninda ayni boyutta mikrofon */
+.p-self-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 6px;
+  z-index: 2;
+}
+.p-self-tools .p-cam-btn {
+  position: static;
+}
+.p-mic-btn {
+  border: 1px solid var(--border-strong);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.p-mic-btn.on {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.remote-audio {
+  display: none;
+}

@@ -122,6 +122,8 @@ function getTabClientId() {
 }
 
 const state = {
+  headsetConnected: false, // kulaklik takili mi (yalnizca uygulama)
+  speakerToo: false, // "Ben"in cevirisi telefondan da calsin mi
   mode: 'loop', // 'loop' | 'face' | 'online'
   isActive: false,
   phase: 'idle', // 'idle' | 'listening' | 'translating' | 'speaking'
@@ -451,6 +453,7 @@ function stopSpeaking() {
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
   }
+  if (AudioRoute && state.speakerToo) AudioRoute.stop().catch(() => {});
 }
 
 // iPhone/iPad (iOS'ta Chrome dahil): tarayici, kullanici bir kez dokunmadan
@@ -476,7 +479,84 @@ function unlockSpeech() {
   document.addEventListener(ev, unlockSpeech, { capture: true, passive: true })
 );
 
-function speakText(text, langCode) {
+// ---------------------------------------------------------------------------
+// Kulaklik takiliyken "Ben"in cevirisini telefon hoparlorunden de ver
+// (yalnizca uygulamada; Canli Dongu ve Yuz Yuze). Karsidakinin cevirisi
+// her zaman yalnizca kulakliktan gelir.
+// ---------------------------------------------------------------------------
+const AudioRoute = (() => {
+  if (!IS_NATIVE_APP) return null;
+  const reg = (window.capacitorExports && window.capacitorExports.registerPlugin) || (window.Capacitor && window.Capacitor.registerPlugin);
+  try {
+    return reg ? reg('AudioRoute') : null;
+  } catch {
+    return null;
+  }
+})();
+
+function updateHeadset(info) {
+  const connected = Boolean(info && info.connected);
+  state.headsetConnected = connected;
+  if (!connected) state.speakerToo = false; // kulaklik cikinca normale don
+  renderAudioRoute();
+}
+
+function renderAudioRoute() {
+  const bar = document.getElementById('audioRouteBar');
+  const btn = document.getElementById('speakerTooBtn');
+  if (!bar || !btn) return;
+  const show = Boolean(AudioRoute) && state.headsetConnected && (state.mode === 'loop' || state.mode === 'face');
+  bar.classList.toggle('hidden', !show);
+  btn.setAttribute('aria-pressed', String(state.speakerToo));
+  btn.classList.toggle('active', state.speakerToo);
+  btn.textContent = state.speakerToo ? t('audio.speakerTooOn') : t('audio.speakerTooOff');
+}
+
+function initAudioRoute() {
+  if (!AudioRoute) return;
+  AudioRoute.getState().then(updateHeadset).catch(() => {});
+  try {
+    AudioRoute.addListener('headsetChange', updateHeadset);
+  } catch {
+    // eklenti yok
+  }
+}
+
+// Bu ceviri hem kulakliktan hem telefondan mi calsin?
+function shouldSpeakBoth(isMine) {
+  return Boolean(AudioRoute) && isMine && state.speakerToo && state.headsetConnected && (state.mode === 'loop' || state.mode === 'face');
+}
+
+function speakBoth(text, langCode) {
+  text = stripMaskForSpeech(censor(text, langCode));
+  if (!text) return Promise.resolve();
+  stopSpeaking();
+  const maxMs = Math.max(8000, text.length * 160) + 4000;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      AudioRoute.stop().catch(() => {});
+      finish();
+    }, maxMs);
+    AudioRoute.speakBoth({ text, lang: langCode, rate: state.settings.speechRate || 1 })
+      .then(finish)
+      .catch(() => {
+        // Olmazsa normal yoldan (yalnizca kulaklik) oku
+        clearTimeout(timer);
+        done = true;
+        speakText(text, langCode).then(resolve);
+      });
+  });
+}
+
+function speakText(text, langCode, opts) {
+  if (opts && shouldSpeakBoth(opts.mine)) return speakBoth(text, langCode);
   text = stripMaskForSpeech(censor(text, langCode));
   return new Promise((resolve) => {
     if (!('speechSynthesis' in window) || !text) {
@@ -883,7 +963,7 @@ async function handleUtterance(text, speaker) {
 
     if (state.settings.autoSpeak && translatedText) {
       setPhase('speaking');
-      await speakText(translatedText, targetLang);
+      await speakText(translatedText, targetLang, { mine: speaker === 'me' });
     }
   } catch (err) {
     showAlert(t('err.translate', { err: err.message }));
@@ -975,7 +1055,7 @@ function appendMessage({
   card.querySelector('.copy-btn').textContent = t('msg.copy');
 
   card.querySelector('.replay-btn').addEventListener('click', () => {
-    speakText(translatedText, targetLang);
+    speakText(translatedText, targetLang, { mine: speaker === 'me' });
   });
 
   card.querySelector('.copy-btn').addEventListener('click', async (e) => {
@@ -1129,6 +1209,7 @@ function setMode(mode) {
   els.cameraStage.classList.toggle('hidden', mode !== 'camera');
   els.faceStage.classList.toggle('hidden', mode !== 'face');
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
+  renderAudioRoute();
   const modeMenuSel = document.getElementById('modeMenuSelect');
   if (modeMenuSel) modeMenuSel.value = mode;
   updateRoomLayout();
@@ -2144,6 +2225,17 @@ function bindEvents() {
 
   els.modeCameraBtn.addEventListener('click', () => setMode('camera'));
   els.modeLoopBtn.addEventListener('click', () => setMode('loop'));
+  // Kulaklik takiliyken: "Ben"in cevirisi telefondan da duyulsun / yalnizca kulaklik
+  const speakerTooBtn = document.getElementById('speakerTooBtn');
+  if (speakerTooBtn) {
+    speakerTooBtn.addEventListener('click', () => {
+      if (!state.headsetConnected) return;
+      state.speakerToo = !state.speakerToo;
+      if (!state.speakerToo && AudioRoute) AudioRoute.stop().catch(() => {});
+      renderAudioRoute();
+    });
+  }
+  initAudioRoute();
   els.modeFaceBtn.addEventListener('click', () => setMode('face'));
   els.modeOnlineBtn.addEventListener('click', () => setMode('online'));
   // Odadayken sekmeler yerine ust cubuktaki mod dugmesi (uygulamada)
@@ -2354,6 +2446,7 @@ function rerenderForUiLang() {
   renderSlot('presence');
   fileCards.forEach((entry) => renderFileCard(entry));
   renderParticipants();
+  renderAudioRoute();
   // Henuz konusulmamis yuz yuze kartlari yeni dilde goster
   [els.faceMeText, els.facePartnerText].forEach((el) => {
     if (!state.isActive && el.dataset.untouched !== 'false') el.textContent = t('face.tap');

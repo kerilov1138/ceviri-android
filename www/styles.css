@@ -2014,3 +2014,32 @@ html.guest-mode #inviteLinkInput {
     order: 7;
   }
 }
+
+/* Kulaklik takiliyken: "Ben"in cevirisi telefondan da duyulsun */
+.audio-route-bar {
+  grid-column: 1 / -1; /* ana izgarada kendi satiri */
+  display: flex;
+  justify-content: center;
+}
+.audio-route-bar.hidden {
+  display: none;
+}
+.audio-route-btn {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.audio-route-btn.active {
+  border-color: var(--me);
+  background: var(--me-soft);
+  color: var(--me);
+}
+.audio-route-btn:focus-visible {
+  outline: 2px solid var(--me);
+  outline-offset: 2px;
+}

@@ -1,5 +1,5 @@
 import { LANGUAGES, findLanguage } from './languages.js';
-import { initI18n, t, langName, setUiLang, getUiLang, onUiLangChange, UI_LANGS } from './i18n.js';
+import { initI18n, t, langName, setUiLang, getUiLang, isRtl, onUiLangChange, UI_LANGS } from './i18n.js';
 import { censor, stripMaskForSpeech } from './profanity.js';
 import { initCamera } from './camera.js';
 import { createVideoMesh } from './video.js';
@@ -146,6 +146,9 @@ const state = {
   settings: {
     autoSpeak: true,
     autoLoop: true,
+    autoDetect: true, // konusani dilinden tani (Canli Dongu)
+    keepAwake: true, // canli ceviride / odada ekran acik kalsin
+    headsetButton: true, // kulaklik dugmesiyle konus (uygulama)
     flipPartner: false,
     speechRate: 1.0,
     ...loadSavedSettings(),
@@ -253,6 +256,10 @@ const els = {
   videoReceiveBtn: document.getElementById('videoReceiveBtn'),
   attachInput: document.getElementById('attachInput'),
   exportBtn: document.getElementById('exportBtn'),
+  exportModal: document.getElementById('exportModal'),
+  autoDetectToggle: document.getElementById('autoDetectToggle'),
+  keepAwakeToggle: document.getElementById('keepAwakeToggle'),
+  headsetButtonToggle: document.getElementById('headsetButtonToggle'),
   clearBtn: document.getElementById('clearBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   settingsModal: document.getElementById('settingsModal'),
@@ -826,7 +833,14 @@ function startListening() {
     const cleanText = (finalTranscript || state.pendingTranscript).trim();
     state.pendingTranscript = '';
     if (cleanText) {
-      await handleUtterance(cleanText, state.activeSpeaker);
+      // Cumle aslinda karsi tarafin dilindeyse konusani duzelt (sira da ona gore doner)
+      const spk = await detectSpeaker(cleanText, state.activeSpeaker);
+      if (!state.isActive || gen !== state.recognitionGen) return;
+      if (spk !== state.activeSpeaker) {
+        state.activeSpeaker = spk;
+        updateTurnUI();
+      }
+      await handleUtterance(cleanText, spk);
       if (!state.isActive || gen !== state.recognitionGen) return;
 
       if (state.mode === 'face') {
@@ -884,6 +898,61 @@ function mergeTranscript(a, b) {
   return `${a} ${b}`;
 }
 
+// ---------------------------------------------------------------------------
+// Konusani dilinden tanima (Canli Dongu). Konusma tanima secili dilde dinler;
+// soylenen cumle metin olarak karsi tarafin dilinde cikarsa (or. Turkce dinlerken
+// Ingilizce cumle) konusan karsi taraf sayilir ve ceviri dogru yone yapilir.
+// ---------------------------------------------------------------------------
+function baseLang(code) {
+  let b = String(code || '').split(/[-_]/)[0].toLowerCase();
+  if (b === 'iw') b = 'he';
+  if (b === 'nb' || b === 'nn') b = 'no';
+  return b;
+}
+
+async function identifyLanguages(text) {
+  const tools = window.CeviriTools;
+  try {
+    if (tools) {
+      const r = await tools.identifyLanguage({ text });
+      const out = {};
+      (r.languages || []).forEach((l) => {
+        const b = baseLang(l.lang);
+        if (b && b !== 'und') out[b] = Math.max(out[b] || 0, Number(l.confidence) || 0);
+      });
+      return out;
+    }
+    // Uygulama disi (bilgisayar): ceviri servisinin dil tespiti
+    const res = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, sourceLang: 'auto', targetLang: state.myLang }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const b = baseLang(data.detectedSourceLang);
+    return b ? { [b]: 1 } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function detectSpeaker(text, expected) {
+  if (!state.settings.autoDetect || state.mode !== 'loop') return expected;
+  if (text.trim().split(/\s+/).length < 2) return expected; // tek kelime guvenilmez
+  const myB = baseLang(state.myLang);
+  const partnerB = baseLang(state.partnerLang);
+  if (!myB || !partnerB || myB === partnerB) return expected;
+  const scores = await identifyLanguages(text);
+  if (!scores) return expected;
+  const expB = expected === 'me' ? myB : partnerB;
+  const otherB = expected === 'me' ? partnerB : myB;
+  if ((scores[otherB] || 0) >= 0.6 && (scores[expB] || 0) < 0.3) {
+    return expected === 'me' ? 'partner' : 'me';
+  }
+  return expected;
+}
+
 async function handleUtterance(text, speaker) {
   // Kufurler karsiya hic gitmesin: cevirmeden once kaynak dilde filtrele
   text = censor(text, state.mode === 'online' || speaker === 'me' ? state.myLang : state.partnerLang);
@@ -935,9 +1004,7 @@ async function handleUtterance(text, speaker) {
       body: JSON.stringify({ text, sourceLang, targetLang }),
     });
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await translateError(res);
 
     const data = await res.json();
     const translatedText = censor(data.translatedText || '', targetLang);
@@ -966,12 +1033,28 @@ async function handleUtterance(text, speaker) {
       await speakText(translatedText, targetLang, { mine: speaker === 'me' });
     }
   } catch (err) {
-    showAlert(t('err.translate', { err: err.message }));
+    showAlert(err.userMessage || t('err.translate', { err: err.message }));
   } finally {
     if (!state.isActive) {
       setPhase('idle');
     }
   }
+}
+
+// Ceviri hatasini anlasilir mesaja cevir (or. internet yok + paket indirilmemis)
+async function translateError(res) {
+  let detail = '';
+  try {
+    detail = String((await res.json()).detail || '');
+  } catch {
+    // govde yok
+  }
+  const err = new Error(`HTTP ${res.status}`);
+  if (detail.includes('OFFLINE_MODEL_MISSING')) err.userMessage = t('offline.missing');
+  else if (detail.includes('OFFLINE_UNSUPPORTED')) err.userMessage = t('offline.unsupported');
+  else if (detail.includes('OFFLINE_FAILED')) err.userMessage = t('offline.failed');
+  if (err.userMessage) err.message = err.userMessage;
+  return err;
 }
 
 // Online odada her kisinin rengi: sari, kirmizi, lacivert, gri, koyu yesil, pembe
@@ -1210,6 +1293,7 @@ function setMode(mode) {
   els.faceStage.classList.toggle('hidden', mode !== 'face');
   els.onlineBar.classList.toggle('hidden', mode !== 'online');
   renderAudioRoute();
+  updateMediaButtons();
   const modeMenuSel = document.getElementById('modeMenuSelect');
   if (modeMenuSel) modeMenuSel.value = mode;
   updateRoomLayout();
@@ -1864,10 +1948,6 @@ const remoteStreams = new Map(); // katilimci id -> MediaStream
 const peerStates = new Map(); // katilimci id -> WebRTC baglanti durumu
 const tiles = new Map(); // katilimci id -> kutu elemani
 
-function baseLang(code) {
-  return String(code || '').toLowerCase().split('-')[0];
-}
-
 /** Gelen mesaj benim dilimde degilse (grup odasi) kendi cihazimda cevir. */
 async function ensureMyLanguage(msg) {
   if (msg.translatedText && msg.targetLang && baseLang(msg.targetLang) === baseLang(state.myLang)) return msg;
@@ -2179,17 +2259,231 @@ function leaveOnlineRoom() {
 
 function exportTranscript() {
   if (!state.messages.length) return;
+  els.exportModal.classList.remove('hidden');
+}
+
+function exportWho(m) {
+  return m.senderName || (m.speaker === 'me' ? t('who.meUpper') : t('who.partnerUpper'));
+}
+
+function exportFileBase() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `ceviri-sohbet-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+// Iki dilli, yazdirilabilir dokum (tum alfabeler icin sistem yazi tipleri)
+function buildTranscriptHtml() {
+  const dateStr = new Date().toLocaleString(getUiLang());
+  const items = state.messages
+    .map((m) => {
+      const langs = m.targetLang
+        ? `${findLanguage(m.sourceLang).short} → ${findLanguage(m.targetLang).short}`
+        : findLanguage(m.sourceLang).short;
+      return `<div class="m ${m.speaker === 'me' ? 'me' : 'partner'}">
+  <div class="who">${escapeHtml(exportWho(m))} · ${escapeHtml(langs)} · ${escapeHtml(m.time)}</div>
+  <div class="o" dir="auto"><span class="lbl">${escapeHtml(t('export.original'))}:</span> ${escapeHtml(m.originalText)}</div>
+  ${m.translatedText ? `<div class="t" dir="auto"><span class="lbl">${escapeHtml(t('export.translation'))}:</span> ${escapeHtml(m.translatedText)}</div>` : ''}
+</div>`;
+    })
+    .join('\n');
+  return `<!DOCTYPE html>
+<html lang="${escapeHtml(getUiLang())}" dir="${isRtl() ? 'rtl' : 'ltr'}">
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(t('export.docTitle'))}</title>
+<style>
+  @page { margin: 16mm; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Arabic", "Noto Sans CJK SC", sans-serif; color: #111; margin: 0; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: #555; font-size: 12px; margin-bottom: 18px; }
+  .m { border-left: 4px solid #10b981; padding: 8px 12px; margin: 0 0 10px; break-inside: avoid; page-break-inside: avoid; background: #f7f7f8; }
+  html[dir="rtl"] .m { border-left: 0; border-right: 4px solid #10b981; }
+  .m.partner { border-color: #6366f1; }
+  .who { font-size: 11px; font-weight: 700; color: #444; margin-bottom: 4px; }
+  .o { font-size: 14px; line-height: 1.45; }
+  .t { font-size: 14px; line-height: 1.45; font-weight: 600; margin-top: 4px; }
+  .lbl { font-weight: 400; color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(t('export.docTitle'))}</h1>
+<div class="meta">${escapeHtml(dateStr)} · ${escapeHtml(t('stream.count', { n: state.messages.length }))}</div>
+${items}
+</body>
+</html>`;
+}
+
+async function exportPdf() {
+  els.exportModal.classList.add('hidden');
+  if (!state.messages.length) return;
+  const html = buildTranscriptHtml();
+  const name = exportFileBase();
+  if (window.CeviriTools) {
+    // Uygulama: sistemin "PDF olarak kaydet" ekrani
+    try {
+      await window.CeviriTools.printHtml({ html, name });
+    } catch {
+      showAlert(t('export.failed'));
+    }
+    return;
+  }
+  // Tarayici / bilgisayar: yazdirma penceresinde "PDF olarak kaydet"
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(frame);
+  frame.onload = () => {
+    try {
+      frame.contentWindow.document.title = name;
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    } catch {
+      showAlert(t('export.failed'));
+    }
+    setTimeout(() => frame.remove(), 60000);
+  };
+  frame.srcdoc = html;
+}
+
+async function exportTxt() {
+  els.exportModal.classList.add('hidden');
+  if (!state.messages.length) return;
   const lines = state.messages.map(
     (m) =>
       `[${m.time}] ${m.senderName || (m.speaker === 'me' ? t('who.meUpper') : t('who.partnerUpper'))} (${findLanguage(m.sourceLang).short} -> ${findLanguage(m.targetLang).short})\n${t('export.original')}: ${m.originalText}\n${t('export.translation')}: ${m.translatedText}\n`
   );
-  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `ceviri-sohbet-${new Date().toISOString().slice(0, 10)}.txt`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const header = `${t('export.docTitle')} — ${new Date().toLocaleString(getUiLang())}\n\n`;
+  const blob = new Blob(['\ufeff' + header + lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  try {
+    await saveBlob(blob, `${exportFileBase()}.txt`, 'text/plain');
+  } catch {
+    showAlert(t('export.failed'));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ekran acik kalsin: canli ceviri surerken ve odadayken
+// ---------------------------------------------------------------------------
+let wakeWanted = false;
+let wakeSentinel = null;
+async function applyWakeLock() {
+  const want = Boolean(state.settings.keepAwake) && (state.isActive || (state.mode === 'online' && Boolean(state.roomCode)));
+  if (want === wakeWanted && (!want || window.CeviriTools || wakeSentinel)) return;
+  wakeWanted = want;
+  if (window.CeviriTools) {
+    window.CeviriTools.setKeepScreenOn({ on: want }).catch(() => {});
+    return;
+  }
+  try {
+    if (want && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+      if (!wakeSentinel) {
+        wakeSentinel = await navigator.wakeLock.request('screen');
+        wakeSentinel.addEventListener('release', () => (wakeSentinel = null));
+      }
+    } else if (!want && wakeSentinel) {
+      await wakeSentinel.release();
+      wakeSentinel = null;
+    }
+  } catch {
+    wakeSentinel = null; // tarayici izin vermedi
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kulaklik dugmesi (oynat/duraklat) ile konusmayi baslat / durdur (uygulama)
+// ---------------------------------------------------------------------------
+let mediaButtonsOn = null;
+function updateMediaButtons() {
+  const tools = window.CeviriTools;
+  if (!tools) return;
+  const want = Boolean(state.settings.headsetButton) && ['loop', 'face', 'online'].includes(state.mode);
+  if (want === mediaButtonsOn) return;
+  mediaButtonsOn = want;
+  tools.setMediaButtons({ enabled: want }).catch(() => {});
+}
+
+function onHeadsetButton() {
+  if (!state.settings.headsetButton) return;
+  if (navigator.vibrate) navigator.vibrate(40);
+  if (state.mode === 'face') {
+    // Yuz Yuze: kulaklik bendeyse "Ben" konusur
+    els.faceMeBtn.click();
+  } else if (state.mode === 'loop' || state.mode === 'online') {
+    if (!els.mainToggleBtn.disabled) els.mainToggleBtn.click();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cevrimdisi ceviri paketleri (Ayarlar)
+// ---------------------------------------------------------------------------
+const offlineBusy = new Set();
+async function renderOfflineSection() {
+  const tools = window.CeviriTools;
+  const box = document.getElementById('offlineLangs');
+  if (!tools || !box) return;
+  let have = [];
+  try {
+    have = ((await tools.offlineModels()).languages || []).map(baseLang);
+  } catch {
+    have = [];
+  }
+  const codes = [...new Set([state.myLang, state.partnerLang])];
+  const rows = await Promise.all(
+    codes.map(async (code) => {
+      let supported = true;
+      let mlCode = baseLang(code);
+      try {
+        const r = await tools.offlineSupported({ lang: code });
+        supported = Boolean(r.supported);
+        if (r.code) mlCode = baseLang(r.code);
+      } catch {
+        supported = false;
+      }
+      const row = document.createElement('div');
+      row.className = 'offline-row';
+      const name = document.createElement('span');
+      name.className = 'offline-name';
+      name.textContent = displayLangName(code, findLanguage(code).name);
+      row.appendChild(name);
+      if (!supported) {
+        const st = document.createElement('span');
+        st.className = 'offline-status muted';
+        st.textContent = t('offline.notAvailable');
+        row.appendChild(st);
+      } else if (have.includes(mlCode)) {
+        const st = document.createElement('span');
+        st.className = 'offline-status ok';
+        st.textContent = t('offline.ready');
+        row.appendChild(st);
+      } else {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mini-btn offline-dl';
+        const busy = offlineBusy.has(mlCode);
+        btn.disabled = busy;
+        btn.textContent = busy ? t('offline.downloading') : t('offline.download');
+        btn.addEventListener('click', async () => {
+          offlineBusy.add(mlCode);
+          renderOfflineSection();
+          try {
+            await tools.downloadOffline({ lang: code });
+          } catch {
+            showAlert(t('offline.dlFailed'));
+          }
+          offlineBusy.delete(mlCode);
+          renderOfflineSection();
+        });
+        row.appendChild(btn);
+      }
+      return row;
+    })
+  );
+  box.replaceChildren(...rows);
 }
 
 // Event Listeners
@@ -2198,6 +2492,7 @@ function bindEvents() {
     state.myLang = e.target.value;
     localStorage.setItem(STORAGE_KEYS.myLang, state.myLang);
     updateLanguageBadges();
+    renderOfflineSection();
     if (state.mode === 'online' && state.roomCode) {
       connectToRoom(state.roomCode);
     }
@@ -2208,6 +2503,7 @@ function bindEvents() {
     state.partnerLang = e.target.value;
     localStorage.setItem(STORAGE_KEYS.partnerLang, state.partnerLang);
     updateLanguageBadges();
+    renderOfflineSection();
     if (state.isActive && state.activeSpeaker === 'partner') startListening();
   });
 
@@ -2354,11 +2650,32 @@ function bindEvents() {
   });
 
   els.exportBtn.addEventListener('click', exportTranscript);
+  document.getElementById('exportPdfBtn').addEventListener('click', exportPdf);
+  document.getElementById('exportTxtBtn').addEventListener('click', exportTxt);
+  document.getElementById('closeExportBtn').addEventListener('click', () => els.exportModal.classList.add('hidden'));
+  els.exportModal.addEventListener('click', (e) => {
+    if (e.target === els.exportModal) els.exportModal.classList.add('hidden');
+  });
+
+  // Yalnizca uygulamada olan ayarlar (kulaklik dugmesi, cevrimdisi paketler)
+  document.querySelectorAll('.native-only').forEach((el) => el.classList.toggle('hidden', !window.CeviriTools));
+  if (window.CeviriTools) {
+    window.CeviriTools.addListener('mediaButton', onHeadsetButton).catch(() => {});
+  }
+  // Ekran acik kalsin: durum degistikce uygula (canli ceviri / oda)
+  setInterval(applyWakeLock, 1500);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      wakeWanted = false; // yeniden iste
+      applyWakeLock();
+    }
+  });
   els.alertCloseBtn.addEventListener('click', hideAlert);
 
   // Settings modal
   els.settingsBtn.addEventListener('click', () => {
     els.settingsModal.classList.remove('hidden');
+    renderOfflineSection();
   });
 
   els.closeSettingsBtn.addEventListener('click', () => {
@@ -2386,6 +2703,24 @@ function bindEvents() {
   els.autoLoopToggle.addEventListener('change', (e) => {
     state.settings.autoLoop = e.target.checked;
     saveSettings();
+  });
+
+  els.autoDetectToggle.checked = state.settings.autoDetect;
+  els.keepAwakeToggle.checked = state.settings.keepAwake;
+  els.headsetButtonToggle.checked = state.settings.headsetButton;
+  els.autoDetectToggle.addEventListener('change', (e) => {
+    state.settings.autoDetect = e.target.checked;
+    saveSettings();
+  });
+  els.keepAwakeToggle.addEventListener('change', (e) => {
+    state.settings.keepAwake = e.target.checked;
+    saveSettings();
+    applyWakeLock();
+  });
+  els.headsetButtonToggle.addEventListener('change', (e) => {
+    state.settings.headsetButton = e.target.checked;
+    saveSettings();
+    updateMediaButtons();
   });
 
   els.flipPartnerToggle.addEventListener('change', (e) => {
@@ -2471,7 +2806,7 @@ async function translateViaApi(text, sourceLang, targetLang) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, sourceLang, targetLang }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw await translateError(res);
   const data = await res.json();
   return data.translatedText || '';
 }

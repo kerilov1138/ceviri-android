@@ -2043,3 +2043,64 @@ html.guest-mode #inviteLinkInput {
   outline: 2px solid var(--me);
   outline-offset: 2px;
 }
+
+/* Cevrimdisi ceviri paketleri (Ayarlar) */
+.setting-row.column .setting-desc {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.offline-langs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.offline-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.offline-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.offline-status {
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+.offline-status.ok {
+  color: var(--me);
+}
+.offline-status.muted {
+  color: var(--text-muted);
+}
+.offline-dl {
+  flex-shrink: 0;
+}
+
+/* Disa aktarma secenekleri */
+.export-card {
+  max-width: 380px;
+}
+.export-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.export-options .online-btn {
+  width: 100%;
+  padding: 12px 16px;
+}
+.setting-row .offline-row .offline-name {
+  color: var(--text);
+}

@@ -278,6 +278,39 @@
 
         <label class="setting-row">
           <div>
+            <strong data-i18n="settings.autoDetect">Konuşanı Dilinden Tanı (Canlı Döngü)</strong>
+            <span data-i18n="settings.autoDetectDesc">Söylenen cümle karşı tarafın dilindeyse sırayı kendiliğinden düzeltir</span>
+          </div>
+          <input id="autoDetectToggle" type="checkbox" checked />
+        </label>
+
+        <label class="setting-row">
+          <div>
+            <strong data-i18n="settings.keepAwake">Ekran Açık Kalsın</strong>
+            <span data-i18n="settings.keepAwakeDesc">Canlı çeviri sırasında ve odadayken ekran kararmaz, mikrofon kapanmaz</span>
+          </div>
+          <input id="keepAwakeToggle" type="checkbox" checked />
+        </label>
+
+        <label id="headsetButtonRow" class="setting-row native-only">
+          <div>
+            <strong data-i18n="settings.headsetButton">Kulaklık Düğmesiyle Konuş</strong>
+            <span data-i18n="settings.headsetButtonDesc">Kulaklıktaki oynat/duraklat düğmesi konuşmayı başlatır ve durdurur</span>
+          </div>
+          <input id="headsetButtonToggle" type="checkbox" checked />
+        </label>
+
+        <div id="offlineSection" class="setting-row column native-only">
+          <div class="setting-row-top">
+            <strong data-i18n="offline.title">Çevrimdışı Çeviri</strong>
+          </div>
+          <span class="setting-desc" data-i18n="offline.desc">İnternet yokken çeviri için seçili dillerin paketlerini indirin (her biri yaklaşık 30 MB, Wi-Fi önerilir).</span>
+          <div id="offlineLangs" class="offline-langs"></div>
+          <span class="setting-desc" data-i18n="offline.speechTip">Konuşmanın yazıya dökülmesi için telefonun Ayarlar › Google › Ses › Çevrimdışı konuşma tanıma bölümünden de aynı dilleri indirin.</span>
+        </div>
+
+        <label class="setting-row">
+          <div>
             <strong data-i18n="settings.flip">Karşı Tarafı 180° Ters Çevir</strong>
             <span data-i18n="settings.flipDesc">Yüz Yüze modda cihazı masaya koyarken üst paneli ters çevirir</span>
           </div>
@@ -291,6 +324,19 @@
           </div>
           <input id="speechRateRange" type="range" min="0.75" max="1.4" step="0.05" value="1.0" />
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="exportModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="exportTitle">
+    <div class="modal-card export-card">
+      <div class="modal-header">
+        <h3 id="exportTitle" data-i18n="export.menuTitle">Konuşmayı Dışa Aktar</h3>
+        <button id="closeExportBtn" class="icon-btn" aria-label="Kapat" data-i18n-attr="aria-label:settings.close">&times;</button>
+      </div>
+      <div class="modal-body export-options">
+        <button id="exportPdfBtn" type="button" class="online-btn primary" data-i18n="export.pdf">📄 PDF olarak kaydet</button>
+        <button id="exportTxtBtn" type="button" class="online-btn secondary" data-i18n="export.txt">📝 Metin olarak kaydet</button>
       </div>
     </div>
   </div>

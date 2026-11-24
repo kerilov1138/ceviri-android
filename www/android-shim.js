@@ -26,16 +26,15 @@
   var registerPlugin = (window.capacitorExports && window.capacitorExports.registerPlugin) || (Cap && Cap.registerPlugin);
   var SR = isNative ? registerPlugin('SpeechRecognition') : null;
   var TTS = isNative ? registerPlugin('TextToSpeech') : null;
+  // Uygulamanin kendi yerel araclari: cevrimdisi ceviri, dil tanima, kulaklik dugmesi, ekran, PDF
+  var Tools = isNative ? registerPlugin('CeviriTools') : null;
+  window.CeviriTools = Tools;
 
   // ---------------------------------------------------------------------------
   // 1) Sunucu gerektiren arayuz parcalarini gizle
   // ---------------------------------------------------------------------------
-  if (isNative) {
-    // WebView dosya indirmeyi desteklemez
-    var style = document.createElement('style');
-    style.textContent = '#exportBtn{display:none!important}';
-    document.documentElement.appendChild(style);
-  }
+  // (Disa aktarma artik uygulamada da calisir: dosya Belgeler/CEVIRI'ye kaydedilir,
+  //  PDF icin sistemin "PDF olarak kaydet" ekrani acilir.)
 
   if (navigator.serviceWorker) {
     try {
@@ -90,7 +89,12 @@
 
     var translatedText;
     var detected = sl;
-    try {
+    var usedOffline = false;
+    // Internet yoksa dogrudan cihaz ici (cevrimdisi) ceviri
+    if (Tools && sl !== 'auto' && navigator.onLine === false) {
+      translatedText = await translateOffline(clean, sl, tl);
+      usedOffline = true;
+    } else try {
       var res = await originalFetch(url, { method: 'GET' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       var data = await res.json();
@@ -102,30 +106,50 @@
         .trim();
       if (typeof data[2] === 'string') detected = data[2];
     } catch (primaryErr) {
-      // Yedek adres (tarayicida ilk adres engellenirse)
-      var url2 = 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex' +
-        '&sl=' + encodeURIComponent(sl) +
-        '&tl=' + encodeURIComponent(tl) +
-        '&q=' + encodeURIComponent(clean);
-      var res2 = await originalFetch(url2, { method: 'GET' });
-      if (!res2.ok) throw primaryErr;
-      var d2 = await res2.json();
-      if (typeof d2 === 'string') d2 = JSON.parse(d2);
-      var first = Array.isArray(d2) ? d2[0] : d2;
-      if (Array.isArray(first)) {
-        translatedText = String(first[0] || '').trim();
-        if (typeof first[1] === 'string') detected = first[1];
-      } else if (typeof first === 'string') {
-        translatedText = first.trim();
-      } else {
-        throw primaryErr;
+      try {
+        // Yedek adres (tarayicida ilk adres engellenirse)
+        var url2 = 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex' +
+          '&sl=' + encodeURIComponent(sl) +
+          '&tl=' + encodeURIComponent(tl) +
+          '&q=' + encodeURIComponent(clean);
+        var res2 = await originalFetch(url2, { method: 'GET' });
+        if (!res2.ok) throw primaryErr;
+        var d2 = await res2.json();
+        if (typeof d2 === 'string') d2 = JSON.parse(d2);
+        var first = Array.isArray(d2) ? d2[0] : d2;
+        if (Array.isArray(first)) {
+          translatedText = String(first[0] || '').trim();
+          if (typeof first[1] === 'string') detected = first[1];
+        } else if (typeof first === 'string') {
+          translatedText = first.trim();
+        } else {
+          throw primaryErr;
+        }
+      } catch (fallbackErr) {
+        // Cevrimici ceviri olmadi (internet zayif / yok): cihaz ici ceviriyi dene
+        if (!Tools || sl === 'auto') throw fallbackErr;
+        translatedText = await translateOffline(clean, sl, tl);
+        usedOffline = true;
       }
     }
 
     if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value);
     cache.set(key, { translatedText: translatedText, detectedSourceLang: detected });
 
-    return { translatedText: translatedText, detectedSourceLang: detected, cached: false, latencyMs: Date.now() - startedAt };
+    return { translatedText: translatedText, detectedSourceLang: detected, cached: false, offline: usedOffline, latencyMs: Date.now() - startedAt };
+  }
+
+  // Cihaz ici ceviri (Google ML Kit). Paket indirilmemisse OFFLINE_MODEL_MISSING.
+  async function translateOffline(clean, sl, tl) {
+    try {
+      var r = await Tools.translateOffline({ text: clean, source: sl, target: tl });
+      return String((r && r.text) || '').trim();
+    } catch (e) {
+      var m = String((e && (e.code || e.message)) || e);
+      if (m.indexOf('OFFLINE_UNSUPPORTED') >= 0) throw new Error('OFFLINE_UNSUPPORTED');
+      if (m.indexOf('OFFLINE_MODEL_MISSING') >= 0) throw new Error('OFFLINE_MODEL_MISSING');
+      throw new Error('OFFLINE_FAILED');
+    }
   }
 
   if (window.CeviriRelay) {

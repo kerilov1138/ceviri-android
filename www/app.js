@@ -126,6 +126,7 @@ const state = {
   headsetConnected: false, // kulaklik takili mi (yalnizca uygulama)
   voiceMode: false, // online odada herkes ayni dilde: dogrudan sesli sohbet
   micMuted: false, // sesli sohbette mikrofonum kapali mi
+  silenced: new Set(), // sesli sohbette sesini kendim icin kistigim kisiler
   speakerToo: false, // "Ben"in cevirisi telefondan da calsin mi
   mode: 'loop', // 'loop' | 'face' | 'online'
   isActive: false,
@@ -363,7 +364,7 @@ function updateTurnUI() {
   els.turnPartnerBtn.classList.toggle('active', !isMe);
   els.mainToggleBtn.dataset.active = String(state.isActive);
   els.mainToggleBtn.dataset.speaker = state.activeSpeaker;
-  const groupWait = lockedByRemote && state.group;
+  const groupWait = lockedByRemote && state.group && !state.voiceMode;
   const inQueue = groupWait && state.queue.includes(state.clientId);
   // 2 kisi: karsidaki konusurken dugme kilitli (bugunku davranis).
   // 3+ kisi: dugme "Soz Iste" / "Siradan Cik" olur.
@@ -2430,7 +2431,15 @@ function renderParticipants() {
         kick.className = 'p-kick-btn hidden';
         kick.textContent = '✕';
         kick.addEventListener('click', () => kickParticipant(p.clientId));
-        tile.appendChild(kick);
+        // Sesli sohbette: bu kisinin sesini yalnizca kendim icin sustur / ac
+        const listen = document.createElement('button');
+        listen.type = 'button';
+        listen.className = 'p-listen-btn hidden';
+        listen.addEventListener('click', () => toggleListen(p.clientId));
+        const tools = document.createElement('div');
+        tools.className = 'p-self-tools';
+        tools.append(listen, kick);
+        tile.appendChild(tools);
       }
       tiles.set(p.clientId, tile);
     }
@@ -2442,7 +2451,7 @@ function renderParticipants() {
     tile.querySelector('.p-lang').textContent = findLanguage(p.lang).short;
     tile.querySelector('.p-avatar').textContent = name.trim().charAt(0).toLocaleUpperCase();
     paintPerson(tile, personColor(p.clientId, p.color));
-    const speaking = state.activeMicClientId === p.clientId;
+    const speaking = !state.voiceMode && state.activeMicClientId === p.clientId;
     tile.classList.toggle('speaking', speaking);
     const spk = tile.querySelector('.p-speaking');
     spk.classList.toggle('hidden', !speaking);
@@ -2454,6 +2463,16 @@ function renderParticipants() {
     const own = tile.querySelector('.p-owner');
     own.classList.toggle('hidden', !isOwnerTile);
     own.title = t('owner.badge');
+    const listenBtn = tile.querySelector('.p-listen-btn');
+    if (listenBtn) {
+      const off = state.silenced.has(p.clientId);
+      listenBtn.classList.toggle('hidden', !state.voiceMode);
+      listenBtn.classList.toggle('on', off);
+      listenBtn.textContent = off ? '🔇' : '🔊';
+      listenBtn.title = `${off ? t('voice.listenOn') : t('voice.listenOff')}: ${p.name || ''}`;
+      listenBtn.setAttribute('aria-label', listenBtn.title);
+      listenBtn.setAttribute('aria-pressed', String(off));
+    }
     const kickBtn = tile.querySelector('.p-kick-btn');
     if (kickBtn) {
       kickBtn.classList.toggle('hidden', state.ownerId !== state.clientId);
@@ -2465,7 +2484,7 @@ function renderParticipants() {
     const isMuted = state.voiceMode && (isMe ? state.micMuted : Boolean(p.mute));
     mutedBadge.classList.toggle('hidden', !isMuted);
     mutedBadge.title = t('voice.mutedBadge');
-    const qpos = state.group ? state.queue.indexOf(p.clientId) : -1;
+    const qpos = state.group && !state.voiceMode ? state.queue.indexOf(p.clientId) : -1;
     const hand = tile.querySelector('.p-hand');
     hand.classList.toggle('hidden', qpos < 0);
     hand.textContent = qpos >= 0 ? `✋ ${qpos + 1}` : '';
@@ -2541,6 +2560,7 @@ function setRemoteAudio(id, stream) {
     remoteAudioEls.set(id, el);
   }
   if (el.srcObject !== stream) el.srcObject = stream;
+  el.muted = state.silenced.has(id);
   el.play().catch(() => {
     // Tarayici dokunus bekliyor: ilk dokunusta yeniden dene
     document.addEventListener('click', () => el.play().catch(() => {}), { once: true, capture: true });
@@ -2564,7 +2584,13 @@ function updateVoiceMode(waiting) {
 async function enterVoiceMode() {
   state.voiceMode = true;
   state.micMuted = false; // mikrofon varsayilan acik
+  state.silenced.clear();
   if (state.isActive) await stopLiveSession(); // konusma tanima mikrofonu birakir
+  // Herkes ayni dilde: soz isteme ve konusma suresi gerekmez
+  if (state.handRaised || (state.queue || []).includes(state.clientId)) {
+    state.handRaised = false;
+    if (state.queue.includes(state.clientId)) toggleHand();
+  }
   setInterimKey('voice.active');
   updateTurnUI();
   renderParticipants();
@@ -2584,11 +2610,22 @@ function exitVoiceMode() {
   if (!state.voiceMode) return;
   state.voiceMode = false;
   state.micMuted = false;
+  state.silenced.clear();
   if (state.videoMesh) state.videoMesh.stopAudio();
   [...remoteAudioEls.keys()].forEach((id) => setRemoteAudio(id, null));
   if (state.roomCode && window.CeviriRelay) window.CeviriRelay.setMute(state.roomCode, false);
   if (state.roomCode) setInterimKey('online.yourTurn');
   updateTurnUI();
+  renderParticipants();
+}
+
+// Karsidakinin sesini yalnizca kendi cihazimda sustur / ac (o kisi fark etmez)
+function toggleListen(id) {
+  if (!state.voiceMode) return;
+  if (state.silenced.has(id)) state.silenced.delete(id);
+  else state.silenced.add(id);
+  const el = remoteAudioEls.get(id);
+  if (el) el.muted = state.silenced.has(id);
   renderParticipants();
 }
 
@@ -3019,7 +3056,7 @@ function bindEvents() {
 
   // Grup odasinda konusma geri sayimi her saniye yenilenir
   setInterval(() => {
-    if (state.mode === 'online' && state.roomCode && state.group && state.activeMicClientId) {
+    if (state.mode === 'online' && state.roomCode && state.group && state.activeMicClientId && !state.voiceMode) {
       renderParticipants();
       updateTurnUI();
     }

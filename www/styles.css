@@ -2121,7 +2121,11 @@ html.guest-mode #inviteLinkInput {
 .p-self-tools .p-cam-btn {
   position: static;
 }
-.p-mic-btn {
+.p-self-tools .p-kick-btn {
+  position: static;
+}
+.p-mic-btn,
+.p-listen-btn {
   border: 1px solid var(--border-strong);
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
@@ -2130,7 +2134,8 @@ html.guest-mode #inviteLinkInput {
   font-size: 0.8rem;
   cursor: pointer;
 }
-.p-mic-btn.on {
+.p-mic-btn.on,
+.p-listen-btn.on {
   background: var(--danger);
   border-color: var(--danger);
 }
